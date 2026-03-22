@@ -4,12 +4,11 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from scheduler import option_scheduler
-from supabase_client import get_supabase
+from supabase_client import supabase_execute
 from zerodha import get_option_chain
 
 
 def seed() -> None:
-    supabase = get_supabase()
     base_chain = get_option_chain(option_scheduler.underlying)
     if _needs_synthetic_seed(base_chain):
         print("Live option quotes are zero. Generating a synthetic baseline for seed data.")
@@ -45,21 +44,27 @@ def seed() -> None:
 
         pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi else 0.0
         expiry = next((row.get("expiry") for row in base_chain if row.get("expiry")), None)
-        supabase.table("option_snapshots").upsert(
-            snapshot_rows,
-            on_conflict="underlying,timestamp,expiry,strike_price,option_type",
-        ).execute()
-        supabase.table("pcr_timeseries").upsert(
-            {
-                "timestamp": timestamp.isoformat(),
-                "underlying": option_scheduler.underlying,
-                "expiry": expiry,
-                "total_call_oi": total_call_oi,
-                "total_put_oi": total_put_oi,
-                "pcr": pcr,
-            },
-            on_conflict="underlying,timestamp",
-        ).execute()
+        supabase_execute(
+            "insert seed option snapshots",
+            lambda supabase: supabase.table("option_snapshots").upsert(
+                snapshot_rows,
+                on_conflict="underlying,timestamp,expiry,strike_price,option_type",
+            ).execute(),
+        )
+        supabase_execute(
+            "insert seed PCR row",
+            lambda supabase: supabase.table("pcr_timeseries").upsert(
+                {
+                    "timestamp": timestamp.isoformat(),
+                    "underlying": option_scheduler.underlying,
+                    "expiry": expiry,
+                    "total_call_oi": total_call_oi,
+                    "total_put_oi": total_put_oi,
+                    "pcr": pcr,
+                },
+                on_conflict="underlying,timestamp",
+            ).execute(),
+        )
         print(f"Inserted snapshot for {timestamp.isoformat()} with PCR {pcr}")
 
     print("Historical seed completed")

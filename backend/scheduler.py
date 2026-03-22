@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from supabase_client import get_supabase
+from supabase_client import supabase_execute
 from zerodha import SUPPORTED_UNDERLYINGS, get_option_chain
 
 
@@ -74,22 +74,27 @@ class OptionDataScheduler:
             pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi else 0.0
             expiry = next((row.get("expiry") for row in option_chain if row.get("expiry")), None)
 
-            supabase = get_supabase()
-            supabase.table("option_snapshots").upsert(
-                snapshot_rows,
-                on_conflict="underlying,timestamp,expiry,strike_price,option_type",
-            ).execute()
-            supabase.table("pcr_timeseries").upsert(
-                {
-                    "timestamp": timestamp,
-                    "underlying": self.underlying,
-                    "expiry": expiry,
-                    "total_call_oi": total_call_oi,
-                    "total_put_oi": total_put_oi,
-                    "pcr": pcr,
-                },
-                on_conflict="underlying,timestamp",
-            ).execute()
+            supabase_execute(
+                "store live option snapshots",
+                lambda supabase: supabase.table("option_snapshots").upsert(
+                    snapshot_rows,
+                    on_conflict="underlying,timestamp,expiry,strike_price,option_type",
+                ).execute(),
+            )
+            supabase_execute(
+                "store live PCR row",
+                lambda supabase: supabase.table("pcr_timeseries").upsert(
+                    {
+                        "timestamp": timestamp,
+                        "underlying": self.underlying,
+                        "expiry": expiry,
+                        "total_call_oi": total_call_oi,
+                        "total_put_oi": total_put_oi,
+                        "pcr": pcr,
+                    },
+                    on_conflict="underlying,timestamp",
+                ).execute(),
+            )
 
             self.last_run = datetime.now(timezone.utc)
             self._sync_next_run()

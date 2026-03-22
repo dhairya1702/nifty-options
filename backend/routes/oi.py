@@ -5,7 +5,7 @@ from collections import defaultdict
 from fastapi import APIRouter
 
 from scheduler import option_scheduler
-from supabase_client import get_supabase
+from supabase_client import supabase_execute
 from zerodha import get_spot_ltp
 
 
@@ -13,14 +13,14 @@ router = APIRouter(prefix="/oi", tags=["oi"])
 
 
 def _latest_timestamps() -> tuple[str | None, str | None]:
-    response = (
-        get_supabase()
-        .table("option_snapshots")
+    response = supabase_execute(
+        "fetch latest option snapshot timestamps",
+        lambda supabase: supabase.table("option_snapshots")
         .select("timestamp")
         .eq("underlying", option_scheduler.underlying)
         .order("timestamp", desc=True)
         .limit(500)
-        .execute()
+        .execute(),
     )
     timestamps = []
     seen: set[str] = set()
@@ -40,14 +40,14 @@ def _group_snapshot(timestamp: str | None) -> dict[float, dict[str, float]]:
     if not timestamp:
         return {}
 
-    response = (
-        get_supabase()
-        .table("option_snapshots")
+    response = supabase_execute(
+        "fetch option snapshot group",
+        lambda supabase: supabase.table("option_snapshots")
         .select("strike_price,option_type,oi,ltp")
         .eq("underlying", option_scheduler.underlying)
         .eq("timestamp", timestamp)
         .order("strike_price")
-        .execute()
+        .execute(),
     )
     grouped: dict[float, dict[str, float]] = defaultdict(
         lambda: {

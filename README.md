@@ -116,28 +116,6 @@ Fill `frontend/.env.local` with:
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
-## One-Click Launch
-
-For a non-technical user on macOS:
-
-- Double-click `Options Dashboard.app`
-- The launcher will:
-  - create a Python virtual environment if needed
-  - install backend and frontend dependencies if needed
-  - build the frontend if the app changed
-  - start backend and frontend in the background
-  - open the dashboard in the browser
-
-To stop both services later, double-click `Stop Options Dashboard.app`.
-
-Fallback launchers are also available as `start_dashboard.command` and `stop_dashboard.command`.
-
-Important:
-
-- `backend/.env` must already contain your Zerodha and Supabase credentials.
-- The launcher will attempt to install Python 3 and Node.js automatically if they are missing.
-- On a brand-new Mac, macOS may still ask for approval to install Apple Command Line Tools or Homebrew once.
-
 ## Usage Notes
 
 - The scheduler runs in-process inside FastAPI using APScheduler.

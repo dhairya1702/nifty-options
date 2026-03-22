@@ -4,7 +4,7 @@ from fastapi import APIRouter
 
 from routes.oi import get_latest_snapshot_groups, get_reference_strike, get_window_rows
 from scheduler import option_scheduler
-from supabase_client import get_supabase
+from supabase_client import supabase_execute
 
 
 router = APIRouter(tags=["sentiment"])
@@ -12,14 +12,14 @@ router = APIRouter(tags=["sentiment"])
 
 @router.get("/sentiment")
 def get_sentiment() -> dict:
-    response = (
-        get_supabase()
-        .table("pcr_timeseries")
+    response = supabase_execute(
+        "fetch sentiment PCR rows",
+        lambda supabase: supabase.table("pcr_timeseries")
         .select("timestamp,pcr")
         .eq("underlying", option_scheduler.underlying)
         .order("timestamp", desc=True)
         .limit(3)
-        .execute()
+        .execute(),
     )
     rows = list(reversed(response.data or []))
     values = [float(row["pcr"]) for row in rows]

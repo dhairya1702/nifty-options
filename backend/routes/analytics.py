@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query
 
 from routes.oi import get_latest_snapshot_groups, get_reference_strike, get_window_rows
 from scheduler import option_scheduler
-from supabase_client import get_supabase
+from supabase_client import supabase_execute
 from zerodha import get_nearest_expiry_for_underlying
 
 
@@ -18,14 +18,14 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 def _fetch_pcr_rows(limit: int = 200) -> list[dict]:
-    response = (
-        get_supabase()
-        .table("pcr_timeseries")
+    response = supabase_execute(
+        "fetch analytics PCR rows",
+        lambda supabase: supabase.table("pcr_timeseries")
         .select("timestamp,pcr,total_call_oi,total_put_oi")
         .eq("underlying", option_scheduler.underlying)
         .order("timestamp", desc=True)
         .limit(limit)
-        .execute()
+        .execute(),
     )
     return list(reversed(response.data or []))
 

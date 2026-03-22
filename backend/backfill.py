@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from scheduler import option_scheduler
-from supabase_client import get_supabase
+from supabase_client import supabase_execute
 from zerodha import get_historical_option_instruments, get_kite_client
 
 
@@ -24,22 +24,23 @@ def _parse_timestamp(value: str) -> datetime:
 
 
 def get_latest_stored_timestamp(underlying: str) -> str | None:
-    supabase = get_supabase()
-    pcr_response = (
-        supabase.table("pcr_timeseries")
+    pcr_response = supabase_execute(
+        "fetch latest stored PCR timestamp",
+        lambda supabase: supabase.table("pcr_timeseries")
         .select("timestamp")
         .eq("underlying", underlying)
         .order("timestamp", desc=True)
         .limit(1)
-        .execute()
+        .execute(),
     )
-    snapshot_response = (
-        supabase.table("option_snapshots")
+    snapshot_response = supabase_execute(
+        "fetch latest stored option snapshot timestamp",
+        lambda supabase: supabase.table("option_snapshots")
         .select("timestamp")
         .eq("underlying", underlying)
         .order("timestamp", desc=True)
         .limit(1)
-        .execute()
+        .execute(),
     )
     candidates = [
         str(row["timestamp"])
@@ -116,18 +117,22 @@ def _insert_rows(snapshot_rows: list[dict], pcr_rows: list[dict]) -> None:
     if not snapshot_rows and not pcr_rows:
         return
 
-    supabase = get_supabase()
-
     for chunk in _chunked(snapshot_rows):
-        supabase.table("option_snapshots").upsert(
-            chunk,
-            on_conflict="underlying,timestamp,expiry,strike_price,option_type",
-        ).execute()
+        supabase_execute(
+            "insert historical option snapshot chunk",
+            lambda supabase, chunk=chunk: supabase.table("option_snapshots").upsert(
+                chunk,
+                on_conflict="underlying,timestamp,expiry,strike_price,option_type",
+            ).execute(),
+        )
     for chunk in _chunked(pcr_rows):
-        supabase.table("pcr_timeseries").upsert(
-            chunk,
-            on_conflict="underlying,timestamp",
-        ).execute()
+        supabase_execute(
+            "insert historical PCR chunk",
+            lambda supabase, chunk=chunk: supabase.table("pcr_timeseries").upsert(
+                chunk,
+                on_conflict="underlying,timestamp",
+            ).execute(),
+        )
 
 
 def backfill_real_history(lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> dict:
@@ -137,9 +142,14 @@ def backfill_real_history(lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> dict:
     to_dt = now_ist
 
     snapshot_rows, pcr_rows = _build_history_rows(underlying, from_dt, to_dt)
-    supabase = get_supabase()
-    supabase.table("option_snapshots").delete().eq("underlying", underlying).execute()
-    supabase.table("pcr_timeseries").delete().eq("underlying", underlying).execute()
+    supabase_execute(
+        "delete historical option snapshots",
+        lambda supabase: supabase.table("option_snapshots").delete().eq("underlying", underlying).execute(),
+    )
+    supabase_execute(
+        "delete historical PCR rows",
+        lambda supabase: supabase.table("pcr_timeseries").delete().eq("underlying", underlying).execute(),
+    )
     _insert_rows(snapshot_rows, pcr_rows)
 
     return {

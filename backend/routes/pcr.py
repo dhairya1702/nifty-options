@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from routes.oi import get_latest_snapshot_groups, get_reference_strike, get_window_rows
 from scheduler import option_scheduler
-from supabase_client import get_supabase
+from supabase_client import supabase_execute
 
 
 router = APIRouter(prefix="/pcr", tags=["pcr"])
@@ -12,14 +12,14 @@ router = APIRouter(prefix="/pcr", tags=["pcr"])
 
 @router.get("/current")
 def get_current_pcr() -> dict:
-    response = (
-        get_supabase()
-        .table("pcr_timeseries")
+    response = supabase_execute(
+        "fetch current PCR",
+        lambda supabase: supabase.table("pcr_timeseries")
         .select("timestamp,pcr,total_call_oi,total_put_oi")
         .eq("underlying", option_scheduler.underlying)
         .order("timestamp", desc=True)
         .limit(1)
-        .execute()
+        .execute(),
     )
     rows = response.data or []
     if not rows:
@@ -44,14 +44,14 @@ def get_current_pcr() -> dict:
 
 @router.get("/history")
 def get_pcr_history(limit: int = Query(50, ge=1, le=500)) -> list[dict]:
-    response = (
-        get_supabase()
-        .table("pcr_timeseries")
+    response = supabase_execute(
+        "fetch PCR history",
+        lambda supabase: supabase.table("pcr_timeseries")
         .select("timestamp,pcr")
         .eq("underlying", option_scheduler.underlying)
         .order("timestamp", desc=True)
         .limit(limit)
-        .execute()
+        .execute(),
     )
     rows = list(reversed(response.data or []))
     return rows
