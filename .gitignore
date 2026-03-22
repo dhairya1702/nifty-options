@@ -11,6 +11,8 @@ backend/*.pyc
 frontend/.env.local
 frontend/.next/
 frontend/node_modules/
+frontend/.npm_installed
+frontend/*.tsbuildinfo
 
 __pycache__/
 *.pyc
