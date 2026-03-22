@@ -4,8 +4,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from kiteconnect import KiteConnect
 
-from config import get_env_value, get_frontend_url, require_settings
-from runtime_settings import set_access_token
+from config import get_frontend_url, require_settings
+from runtime_settings import get_access_token, set_access_token
 from scheduler import option_scheduler
 from zerodha import get_kite_client
 
@@ -15,7 +15,7 @@ router = APIRouter(tags=["auth"])
 
 @router.get("/auth/status")
 def auth_status() -> dict:
-    token_present = bool(get_env_value("ZERODHA_ACCESS_TOKEN"))
+    token_present = bool(get_access_token())
     token_valid = False
 
     if token_present:

@@ -61,6 +61,12 @@ create index if not exists pcr_timeseries_timestamp_idx
 
 create unique index if not exists pcr_timeseries_identity_idx
   on pcr_timeseries (underlying, timestamp);
+
+create table if not exists app_settings (
+  key text primary key,
+  value text not null,
+  updated_at timestamptz not null default now()
+);
 ```
 
 If you already created the tables earlier, apply an `ALTER TABLE` migration to add `expiry`, `tradingsymbol`, and `instrument_token`, plus the unique indexes above, before using the hardened catch-up/upsert path.
@@ -115,6 +121,51 @@ Fill `frontend/.env.local` with:
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
+
+## Render Deployment
+
+This repo now includes a root `render.yaml` Blueprint for deploying both services from the same GitHub repo:
+
+- `options-dashboard-api`: FastAPI backend on Render `starter`
+- `options-dashboard-web`: Next.js frontend on Render `free`
+
+The backend should stay on an always-on plan because the APScheduler live collection loop runs inside the web service process. A free backend would sleep and miss scheduled runs.
+
+### Deploy Steps
+
+1. Push the repo to GitHub.
+2. In Render, create a new Blueprint and point it at this repo.
+3. Let Render create both services from `render.yaml`.
+4. After the first sync, open each service and set these environment variables:
+
+Backend:
+
+```env
+SUPABASE_URL=
+SUPABASE_KEY=
+ZERODHA_API_KEY=
+ZERODHA_API_SECRET=
+ZERODHA_ACCESS_TOKEN=
+FRONTEND_URL=https://<your-frontend>.onrender.com
+```
+
+Frontend:
+
+```env
+NEXT_PUBLIC_API_URL=https://<your-backend>.onrender.com
+```
+
+5. Redeploy both services after setting the URLs above so CORS and redirect targets are correct.
+6. In the Zerodha developer console, set the login callback URL to:
+
+```text
+https://<your-backend>.onrender.com/callback
+```
+
+### Hosted Token Persistence
+
+- Zerodha login on Render stores the access token in Supabase `app_settings`, not in a local `.env` file.
+- `/auth/status` now checks the persisted token source, so hosted login state survives across Render instances.
 
 ## Usage Notes
 
