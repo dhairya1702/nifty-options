@@ -1,0 +1,16 @@
+.DS_Store
+.idea/
+.runtime/
+
+backend/.env
+backend/.venv/
+backend/__pycache__/
+backend/routes/__pycache__/
+backend/*.pyc
+
+frontend/.env.local
+frontend/.next/
+frontend/node_modules/
+
+__pycache__/
+*.pyc

@@ -1,0 +1,8 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+BUNDLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(cd "$BUNDLE_DIR/../.." && pwd)"
+
+exec open -a Terminal "$ROOT_DIR/start_dashboard.command"
