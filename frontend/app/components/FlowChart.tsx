@@ -28,10 +28,10 @@ export function FlowChart({ data, error }: FlowChartProps) {
                 tickFormatter={(value) => new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 stroke="#7c879f"
               />
-              <YAxis tickFormatter={(value) => `${(value / 100000).toFixed(0)}L`} stroke="#7c879f" />
+              <YAxis tickFormatter={(value) => `${(value / 1000).toFixed(0)}K`} stroke="#7c879f" />
               <Tooltip
                 contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
-                formatter={(value: number) => `${(value / 100000).toFixed(1)}L`}
+                formatter={(value: number) => `${(value / 1000).toFixed(1)}K`}
                 labelFormatter={(value) => new Date(value).toLocaleString()}
               />
               <Area type="monotone" dataKey="total_call_oi" stroke="#ff4757" fill="#ff4757" fillOpacity={0.18} />

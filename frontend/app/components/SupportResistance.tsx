@@ -56,7 +56,7 @@ function LevelCard({
               <div className="mb-2 flex items-center justify-between text-sm">
                 <span className="font-semibold text-white">{item.strike_price}</span>
                 <span className="text-right text-slate-300">
-                  {(item.value / 100000).toFixed(1)}L
+                  {(item.value / 1000).toFixed(1)}K
                   <span className="ml-2 text-xs text-slate-500">score {item.score.toFixed(0)}</span>
                 </span>
               </div>

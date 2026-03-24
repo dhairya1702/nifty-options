@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from config import get_env_value
+from config import get_env_value, set_env_value
 from supabase_client import supabase_execute
 
 
@@ -40,4 +40,11 @@ def get_access_token() -> str | None:
 
 
 def set_access_token(value: str) -> None:
+    # Persist locally for laptop runs and remotely for hosted/runtime continuity.
+    set_env_value("ZERODHA_ACCESS_TOKEN", value)
     set_runtime_setting(ZERODHA_ACCESS_TOKEN_KEY, value)
+
+
+def clear_access_token() -> None:
+    set_env_value("ZERODHA_ACCESS_TOKEN", "")
+    set_runtime_setting(ZERODHA_ACCESS_TOKEN_KEY, "")

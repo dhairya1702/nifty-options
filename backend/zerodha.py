@@ -6,9 +6,10 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from kiteconnect import KiteConnect
+from kiteconnect.exceptions import TokenException
 
 from config import get_env_value, require_settings
-from runtime_settings import get_access_token
+from runtime_settings import clear_access_token, get_access_token
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,11 @@ SUPPORTED_UNDERLYINGS = {
 
 class ZerodhaClientError(Exception):
     pass
+
+
+def _handle_token_exception(exc: TokenException) -> None:
+    logger.warning("Clearing stored Zerodha access token after token rejection: %s", exc)
+    clear_access_token()
 
 
 def get_kite_client() -> KiteConnect:
@@ -62,6 +68,9 @@ def _get_option_instruments(underlying: str) -> list[dict[str, Any]]:
 
     try:
         instruments = kite.instruments(NFO_EXCHANGE)
+    except TokenException as exc:
+        _handle_token_exception(exc)
+        raise ZerodhaClientError("Zerodha session expired. Complete login again.") from exc
     except Exception as exc:
         logger.exception("Failed to fetch NFO instruments from Zerodha")
         raise ZerodhaClientError(f"Failed to fetch NFO instruments: {exc}") from exc
@@ -102,6 +111,9 @@ def get_option_chain(underlying: str = "NIFTY") -> list[dict[str, float | str]]:
 
     try:
         quotes = kite.quote(quote_symbols)
+    except TokenException as exc:
+        _handle_token_exception(exc)
+        raise ZerodhaClientError("Zerodha session expired. Complete login again.") from exc
     except Exception as exc:
         logger.exception("Failed to fetch option quotes from Zerodha")
         raise ZerodhaClientError(f"Failed to fetch option quotes: {exc}") from exc
@@ -176,6 +188,10 @@ def get_spot_ltp(underlying: str = "NIFTY") -> float | None:
         quote = kite.quote([spot_symbol])
         last_price = (quote.get(spot_symbol) or {}).get("last_price")
         return float(last_price) if last_price is not None else None
+    except TokenException as exc:
+        _handle_token_exception(exc)
+        logger.info("Spot quote skipped because Zerodha session expired for %s", underlying)
+        return None
     except Exception:
         logger.exception("Failed to fetch %s spot quote", underlying)
         return None

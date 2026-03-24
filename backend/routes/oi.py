@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from math import floor
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 
 from scheduler import option_scheduler
 from supabase_client import supabase_execute
@@ -93,6 +94,75 @@ def get_window_rows(rows: list[dict[str, float]], reference_strike: float | None
     return [row for row in rows if abs(row["strike_price"] - reference_strike) <= strike_window * 50]
 
 
+def get_strike_step(rows: list[dict[str, float]]) -> float:
+    strikes = sorted({float(row["strike_price"]) for row in rows})
+    differences = [current - previous for previous, current in zip(strikes, strikes[1:]) if current > previous]
+    return min(differences) if differences else 50.0
+
+
+def get_atm_strike(rows: list[dict[str, float]], spot: float | None) -> float | None:
+    if not rows:
+        return None
+    if spot is None:
+        return get_reference_strike(rows, spot)
+
+    strike_step = get_strike_step(rows)
+    if strike_step <= 0:
+        strike_step = 50.0
+    rounded_spot = round(spot / strike_step) * strike_step
+    return min(rows, key=lambda row: abs(row["strike_price"] - rounded_spot))["strike_price"]
+
+
+def build_grouped_oi_rows(
+    rows: list[dict[str, float]],
+    spot: float | None,
+    bucket_size: int,
+) -> list[dict[str, float | str]]:
+    if bucket_size <= 0:
+        raise ValueError("bucket_size must be positive")
+    if not rows:
+        return []
+
+    atm = get_atm_strike(rows, spot)
+    if atm is None:
+        return []
+
+    grouped: dict[int, dict[str, float | str]] = {}
+    for row in rows:
+        strike_price = float(row["strike_price"])
+        bucket_id = floor((strike_price - atm) / bucket_size)
+        range_start = atm + bucket_id * bucket_size
+        range_end = range_start + bucket_size
+        bucket = grouped.setdefault(
+            bucket_id,
+            {
+                "range_start": range_start,
+                "range_end": range_end,
+                "range": f"{int(range_start)}-{int(range_end)}",
+                "call_oi": 0.0,
+                "put_oi": 0.0,
+            },
+        )
+        bucket["call_oi"] = float(bucket["call_oi"]) + float(row["call_oi"])
+        bucket["put_oi"] = float(bucket["put_oi"]) + float(row["put_oi"])
+
+    grouped_rows = []
+    for bucket_id in sorted(grouped.keys()):
+        bucket = grouped[bucket_id]
+        call_oi = float(bucket["call_oi"])
+        put_oi = float(bucket["put_oi"])
+        grouped_rows.append(
+            {
+                "range": str(bucket["range"]),
+                "call_oi": round(call_oi, 2),
+                "put_oi": round(put_oi, 2),
+                "pcr": round(put_oi / call_oi, 4) if call_oi else 0.0,
+            }
+        )
+
+    return grouped_rows
+
+
 @router.get("/strikes")
 def get_oi_strikes() -> dict:
     latest_grouped, _, spot = get_latest_snapshot_groups()
@@ -118,3 +188,16 @@ def get_oi_change() -> dict:
             }
         )
     return {"spot_ltp": spot, "rows": rows}
+
+
+@router.get("/grouped")
+def get_oi_grouped(bucket_size: int = Query(150, ge=1, le=5000)) -> list[dict[str, float | str]]:
+    latest_grouped, _, spot = get_latest_snapshot_groups()
+    rows = sorted(latest_grouped.values(), key=lambda row: row["strike_price"])
+    if not rows:
+        raise HTTPException(status_code=404, detail="No option snapshot data found")
+
+    try:
+        return build_grouped_oi_rows(rows, spot, bucket_size)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

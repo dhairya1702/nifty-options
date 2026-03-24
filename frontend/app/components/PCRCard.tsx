@@ -49,7 +49,7 @@ export function PCRCard({
               Window around {referenceStrike ?? "--"} • {windowStrikeCount ?? "--"} strikes
             </p>
             <p className="mt-1 text-sm text-slate-400">
-              Full chain Calls {totalCallOI ? formatLakhs(totalCallOI) : "--"} • Puts {totalPutOI ? formatLakhs(totalPutOI) : "--"}
+              Full chain Calls {totalCallOI ? formatThousands(totalCallOI) : "--"} • Puts {totalPutOI ? formatThousands(totalPutOI) : "--"}
             </p>
           </>
         )}
@@ -58,6 +58,6 @@ export function PCRCard({
   );
 }
 
-function formatLakhs(value: number) {
-  return `${(value / 100000).toFixed(1)}L`;
+function formatThousands(value: number) {
+  return `${(value / 1000).toFixed(1)}K`;
 }

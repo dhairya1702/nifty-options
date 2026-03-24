@@ -3,9 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from kiteconnect import KiteConnect
+from kiteconnect.exceptions import TokenException
 
 from config import get_frontend_url, require_settings
-from runtime_settings import get_access_token, set_access_token
+from runtime_settings import clear_access_token, get_access_token, set_access_token
 from scheduler import option_scheduler
 from zerodha import get_kite_client
 
@@ -23,6 +24,10 @@ def auth_status() -> dict:
             kite = get_kite_client()
             profile = kite.profile()
             token_valid = bool(profile)
+        except TokenException:
+            clear_access_token()
+            token_present = False
+            token_valid = False
         except Exception:
             token_valid = False
 

@@ -35,6 +35,9 @@ export function SchedulerControl({
   const running = status?.running ?? false;
   const lastRunLabel = formatRelative(status?.last_run, "ago");
   const nextRunLabel = formatRelative(status?.next_run, "");
+  const dataStatus = status?.data_status;
+  const latestSnapshotLabel = formatTimestamp(dataStatus?.latest_snapshot_timestamp);
+  const latestPcrLabel = formatTimestamp(dataStatus?.latest_pcr_timestamp);
 
   return (
     <Card className="border-white/10">
@@ -46,17 +49,14 @@ export function SchedulerControl({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {running ? (
-              <Button variant="destructive" onClick={onStop} disabled={busy}>
-                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Square className="mr-2 h-4 w-4" />}
-                Stop
-              </Button>
-            ) : (
-              <Button onClick={onStart} disabled={busy}>
-                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-                Start
-              </Button>
-            )}
+            <Button onClick={onStart} disabled={busy || running}>
+              {busy && !running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+              Start
+            </Button>
+            <Button variant="destructive" onClick={onStop} disabled={busy || !running}>
+              {busy && running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Square className="mr-2 h-4 w-4" />}
+              Stop
+            </Button>
 
             <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
               <select
@@ -94,6 +94,37 @@ export function SchedulerControl({
           <p>Next run: {nextRunLabel}</p>
         </div>
 
+        <div className="mt-5 grid gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm md:grid-cols-2 xl:grid-cols-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Latest Snapshot</p>
+            <p className="mt-2 text-slate-100">{latestSnapshotLabel}</p>
+            <p className="mt-1 text-slate-400">
+              Contracts: {dataStatus?.snapshot_contracts ?? 0}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Latest PCR Row</p>
+            <p className="mt-2 text-slate-100">{latestPcrLabel}</p>
+            <p className="mt-1 text-slate-400">
+              PCR: {dataStatus?.latest_pcr != null ? dataStatus.latest_pcr.toFixed(2) : "--"}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Latest Totals</p>
+            <p className="mt-2 text-slate-100">
+              Calls {formatThousands(dataStatus?.total_call_oi)}
+            </p>
+            <p className="mt-1 text-slate-400">
+              Puts {formatThousands(dataStatus?.total_put_oi)}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Expiry</p>
+            <p className="mt-2 text-slate-100">{dataStatus?.expiry ?? "--"}</p>
+            <p className="mt-1 text-slate-400">{running ? "Live collection armed" : "Scheduler idle"}</p>
+          </div>
+        </div>
+
         {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
       </CardContent>
     </Card>
@@ -111,4 +142,18 @@ function formatRelative(value: string | null | undefined, suffix: string) {
     return `${elapsed} min${elapsed === 1 ? "" : "s"} ago`;
   }
   return `in ${diffMinutes} min${diffMinutes === 1 ? "" : "s"}`;
+}
+
+function formatTimestamp(value: string | null | undefined) {
+  if (!value) {
+    return "No data yet";
+  }
+  return new Date(value).toLocaleString();
+}
+
+function formatThousands(value: number | null | undefined) {
+  if (value == null) {
+    return "--";
+  }
+  return `${(value / 1000).toFixed(1)}K`;
 }

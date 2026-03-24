@@ -110,6 +110,56 @@ class OptionDataScheduler:
         else:
             self.next_run = None
 
+    def _latest_data_status(self) -> dict[str, Any] | None:
+        try:
+            latest_pcr = supabase_execute(
+                "fetch latest scheduler PCR row",
+                lambda supabase: supabase.table("pcr_timeseries")
+                .select("timestamp,expiry,pcr,total_call_oi,total_put_oi")
+                .eq("underlying", self.underlying)
+                .order("timestamp", desc=True)
+                .limit(1)
+                .execute(),
+            )
+            latest_snapshot = supabase_execute(
+                "fetch latest scheduler snapshot timestamp",
+                lambda supabase: supabase.table("option_snapshots")
+                .select("timestamp")
+                .eq("underlying", self.underlying)
+                .order("timestamp", desc=True)
+                .limit(1)
+                .execute(),
+            )
+
+            latest_pcr_row = (latest_pcr.data or [None])[0]
+            latest_snapshot_row = (latest_snapshot.data or [None])[0]
+            latest_snapshot_timestamp = latest_snapshot_row["timestamp"] if latest_snapshot_row else None
+
+            snapshot_contracts = 0
+            if latest_snapshot_timestamp:
+                snapshot_count = supabase_execute(
+                    "count latest scheduler snapshot rows",
+                    lambda supabase: supabase.table("option_snapshots")
+                    .select("id", count="exact")
+                    .eq("underlying", self.underlying)
+                    .eq("timestamp", latest_snapshot_timestamp)
+                    .execute(),
+                )
+                snapshot_contracts = snapshot_count.count or 0
+
+            return {
+                "latest_snapshot_timestamp": latest_snapshot_timestamp,
+                "snapshot_contracts": snapshot_contracts,
+                "latest_pcr_timestamp": latest_pcr_row["timestamp"] if latest_pcr_row else None,
+                "latest_pcr": float(latest_pcr_row["pcr"]) if latest_pcr_row else None,
+                "total_call_oi": float(latest_pcr_row["total_call_oi"]) if latest_pcr_row else None,
+                "total_put_oi": float(latest_pcr_row["total_put_oi"]) if latest_pcr_row else None,
+                "expiry": latest_pcr_row["expiry"] if latest_pcr_row else None,
+            }
+        except Exception:
+            logger.exception("Failed to build scheduler data status")
+            return None
+
     def start(self) -> dict[str, Any]:
         from backfill import DEFAULT_LOOKBACK_DAYS, catch_up_missing_history
 
@@ -151,6 +201,7 @@ class OptionDataScheduler:
             "supported_underlyings": list(SUPPORTED_UNDERLYINGS.keys()),
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "next_run": self.next_run.isoformat() if self.next_run else None,
+            "data_status": self._latest_data_status(),
             "last_catch_up": self.last_catch_up,
         }
 

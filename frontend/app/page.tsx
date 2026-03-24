@@ -9,6 +9,7 @@ import {
   fetchLevels,
   fetchMarketStatus,
   fetchOIChange,
+  fetchOIGrouped,
   fetchPCRCurrent,
   fetchPCRHistory,
   fetchProbabilityAnalytics,
@@ -25,6 +26,7 @@ import {
   type LevelsResponse,
   type MarketStatus,
   type OIChangeRow,
+  type OIGroupedRow,
   type PCRCurrent,
   type PCRHistoryPoint,
   type ProbabilityAnalytics,
@@ -65,6 +67,7 @@ export default function DashboardPage() {
   const [pcrCurrent, setPcrCurrent] = useState<PCRCurrent | null>(null);
   const [pcrHistory, setPcrHistory] = useState<PCRHistoryPoint[]>([]);
   const [oiRows, setOiRows] = useState<OIChangeRow[]>([]);
+  const [groupedOiRows, setGroupedOiRows] = useState<OIGroupedRow[]>([]);
   const [spotLtp, setSpotLtp] = useState<number | null>(null);
   const [levels, setLevels] = useState<LevelsResponse | null>(null);
   const [sentiment, setSentiment] = useState<SentimentResponse | null>(null);
@@ -72,6 +75,8 @@ export default function DashboardPage() {
   const [selectedInterval, setSelectedInterval] = useState(15);
   const [selectedUnderlying, setSelectedUnderlying] = useState("NIFTY");
   const [busy, setBusy] = useState(false);
+  const [oiView, setOiView] = useState<"grouped" | "raw">("grouped");
+  const [groupBucketSize, setGroupBucketSize] = useState(150);
   const [errors, setErrors] = useState<DashboardErrors>({});
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [authMessage, setAuthMessage] = useState<string | null>(null);
@@ -89,6 +94,7 @@ export default function DashboardPage() {
       pcrResult,
       historyResult,
       oiResult,
+      groupedOiResult,
       levelsResult,
       sentimentResult,
       schedulerResult
@@ -103,6 +109,7 @@ export default function DashboardPage() {
         fetchPCRCurrent(),
         fetchPCRHistory(50),
         fetchOIChange(),
+        fetchOIGrouped(groupBucketSize),
         fetchLevels(),
         fetchSentiment(),
         fetchSchedulerStatus()
@@ -162,6 +169,12 @@ export default function DashboardPage() {
       nextErrors.oi = oiResult.reason instanceof Error ? oiResult.reason.message : "Failed to load OI";
     }
 
+    if (groupedOiResult.status === "fulfilled") {
+      setGroupedOiRows(groupedOiResult.value);
+    } else {
+      nextErrors.oi = groupedOiResult.reason instanceof Error ? groupedOiResult.reason.message : "Failed to load grouped OI";
+    }
+
     if (levelsResult.status === "fulfilled") {
       setLevels(levelsResult.value);
     } else {
@@ -204,6 +217,10 @@ export default function DashboardPage() {
     const interval = setInterval(refresh, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [groupBucketSize]);
 
   const pcrDelta = useMemo(() => {
     if (pcrHistory.length < 2) {
@@ -339,7 +356,7 @@ export default function DashboardPage() {
                 <p className="text-sm text-danger">{errors.pcr}</p>
               ) : (
                 <p className="text-4xl font-bold text-white">
-                  {pcrCurrent ? `${(pcrCurrent.total_call_oi / 100000).toFixed(1)}L` : "--"}
+                  {pcrCurrent ? `${(pcrCurrent.total_call_oi / 1000).toFixed(1)}K` : "--"}
                 </p>
               )}
             </CardContent>
@@ -356,7 +373,16 @@ export default function DashboardPage() {
           <PCRChart data={pcrHistory} error={errors.history ?? null} />
           <ProbabilityCard probability={probability} error={errors.probability ?? null} />
         </section>
-        <StrikeTable rows={oiRows} spotLtp={spotLtp} error={errors.oi ?? null} />
+        <StrikeTable
+          rows={oiRows}
+          groupedRows={groupedOiRows}
+          spotLtp={spotLtp}
+          view={oiView}
+          onViewChange={setOiView}
+          bucketSize={groupBucketSize}
+          onBucketSizeChange={setGroupBucketSize}
+          error={errors.oi ?? null}
+        />
         <SlabMomentum slabs={slabAnalytics} error={errors.slabs ?? null} />
         <SupportResistance levels={levels} error={errors.levels ?? null} />
       </div>

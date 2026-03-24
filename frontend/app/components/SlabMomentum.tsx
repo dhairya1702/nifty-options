@@ -41,9 +41,9 @@ function SlabCard({
             <div key={`${item.side}-${item.strike_price}`} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-white">{item.strike_price}</span>
-                <span className={`font-semibold ${color}`}>{formatLakhs(item.delta_oi)}</span>
+                <span className={`font-semibold ${color}`}>{formatThousands(item.delta_oi)}</span>
               </div>
-              <p className="mt-1 text-sm text-slate-400">OI {formatLakhs(item.oi)} • strongest recent buildup</p>
+              <p className="mt-1 text-sm text-slate-400">OI {formatThousands(item.oi)} • strongest recent buildup</p>
             </div>
           ))
         )}
@@ -52,6 +52,6 @@ function SlabCard({
   );
 }
 
-function formatLakhs(value: number) {
-  return `${(value / 100000).toFixed(1)}L`;
+function formatThousands(value: number) {
+  return `${(value / 1000).toFixed(1)}K`;
 }

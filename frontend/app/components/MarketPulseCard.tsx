@@ -30,11 +30,11 @@ export function MarketPulseCard({ overview, error }: MarketPulseCardProps) {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Call OI change</span>
-              <span className="font-semibold text-danger">{formatLakhs(overview?.call_oi_change)}</span>
+              <span className="font-semibold text-danger">{formatThousands(overview?.call_oi_change)}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Put OI change</span>
-              <span className="font-semibold text-accent">{formatLakhs(overview?.put_oi_change)}</span>
+              <span className="font-semibold text-accent">{formatThousands(overview?.put_oi_change)}</span>
             </div>
             <div className="rounded-xl border border-white/10 bg-white/5 p-3">
               <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Stretch</p>
@@ -48,8 +48,8 @@ export function MarketPulseCard({ overview, error }: MarketPulseCardProps) {
   );
 }
 
-function formatLakhs(value?: number | null) {
+function formatThousands(value?: number | null) {
   if (value == null) return "--";
   const sign = value >= 0 ? "+" : "-";
-  return `${sign}${(Math.abs(value) / 100000).toFixed(1)}L`;
+  return `${sign}${(Math.abs(value) / 1000).toFixed(1)}K`;
 }

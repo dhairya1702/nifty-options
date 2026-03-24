@@ -57,6 +57,13 @@ export type OIChangeRow = {
   delta_put_oi: number;
 };
 
+export type OIGroupedRow = {
+  range: string;
+  call_oi: number;
+  put_oi: number;
+  pcr: number;
+};
+
 export type OIResponse<T> = {
   spot_ltp: number | null;
   rows: T[];
@@ -84,6 +91,15 @@ export type SchedulerStatus = {
   supported_underlyings: string[];
   last_run: string | null;
   next_run: string | null;
+  data_status?: {
+    latest_snapshot_timestamp: string | null;
+    snapshot_contracts: number;
+    latest_pcr_timestamp: string | null;
+    latest_pcr: number | null;
+    total_call_oi: number | null;
+    total_put_oi: number | null;
+    expiry: string | null;
+  } | null;
   last_catch_up?: {
     underlying: string;
     lookback_days: number;
@@ -175,6 +191,7 @@ export const fetchPCRCurrent = () => apiRequest<PCRCurrent>("/pcr/current");
 export const fetchPCRHistory = (limit = 50) => apiRequest<PCRHistoryPoint[]>(`/pcr/history?limit=${limit}`);
 export const fetchOIStrikes = () => apiRequest<OIResponse<OIStrikeRow>>("/oi/strikes");
 export const fetchOIChange = () => apiRequest<OIResponse<OIChangeRow>>("/oi/change");
+export const fetchOIGrouped = (bucketSize = 150) => apiRequest<OIGroupedRow[]>(`/oi/grouped?bucket_size=${bucketSize}`);
 export const fetchLevels = () => apiRequest<LevelsResponse>("/levels");
 export const fetchSentiment = () => apiRequest<SentimentResponse>("/sentiment");
 export const fetchSchedulerStatus = () => apiRequest<SchedulerStatus>("/scheduler/status");
