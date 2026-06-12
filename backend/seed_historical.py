@@ -3,8 +3,8 @@ from __future__ import annotations
 import random
 from datetime import datetime, timedelta, timezone
 
+from local_db import upsert_option_snapshots, upsert_pcr_rows
 from scheduler import option_scheduler
-from supabase_client import supabase_execute
 from zerodha import get_option_chain
 
 
@@ -44,26 +44,16 @@ def seed() -> None:
 
         pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi else 0.0
         expiry = next((row.get("expiry") for row in base_chain if row.get("expiry")), None)
-        supabase_execute(
-            "insert seed option snapshots",
-            lambda supabase: supabase.table("option_snapshots").upsert(
-                snapshot_rows,
-                on_conflict="underlying,timestamp,expiry,strike_price,option_type",
-            ).execute(),
-        )
-        supabase_execute(
-            "insert seed PCR row",
-            lambda supabase: supabase.table("pcr_timeseries").upsert(
-                {
-                    "timestamp": timestamp.isoformat(),
-                    "underlying": option_scheduler.underlying,
-                    "expiry": expiry,
-                    "total_call_oi": total_call_oi,
-                    "total_put_oi": total_put_oi,
-                    "pcr": pcr,
-                },
-                on_conflict="underlying,timestamp",
-            ).execute(),
+        upsert_option_snapshots(snapshot_rows)
+        upsert_pcr_rows(
+            {
+                "timestamp": timestamp.isoformat(),
+                "underlying": option_scheduler.underlying,
+                "expiry": expiry,
+                "total_call_oi": total_call_oi,
+                "total_put_oi": total_put_oi,
+                "pcr": pcr,
+            }
         )
         print(f"Inserted snapshot for {timestamp.isoformat()} with PCR {pcr}")
 

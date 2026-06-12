@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from local_db import pcr_history
 from routes.oi import get_latest_snapshot_groups, get_reference_strike, get_window_rows
 from scheduler import option_scheduler
-from supabase_client import supabase_execute
 
 
 router = APIRouter(tags=["sentiment"])
@@ -12,16 +12,7 @@ router = APIRouter(tags=["sentiment"])
 
 @router.get("/sentiment")
 def get_sentiment() -> dict:
-    response = supabase_execute(
-        "fetch sentiment PCR rows",
-        lambda supabase: supabase.table("pcr_timeseries")
-        .select("timestamp,pcr")
-        .eq("underlying", option_scheduler.underlying)
-        .order("timestamp", desc=True)
-        .limit(3)
-        .execute(),
-    )
-    rows = list(reversed(response.data or []))
+    rows = pcr_history(option_scheduler.underlying, 3)
     values = [float(row["pcr"]) for row in rows]
     latest = values[-1] if values else 0.0
     latest_grouped, previous_grouped, spot = get_latest_snapshot_groups()

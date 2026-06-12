@@ -11,10 +11,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_KEY
-        sync: false
       - key: ZERODHA_API_KEY
         sync: false
       - key: ZERODHA_API_SECRET
@@ -23,6 +19,8 @@ services:
         sync: false
       - key: FRONTEND_URL
         sync: false
+      - key: LOCAL_DB_PATH
+        value: /app/data/options_dashboard.sqlite3
 
   - name: options-dashboard-web
     type: web

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from config import get_env_value, set_env_value
-from supabase_client import supabase_execute
+from local_db import get_setting, set_setting
 
 
 ZERODHA_ACCESS_TOKEN_KEY = "zerodha_access_token"
@@ -14,25 +12,11 @@ def get_runtime_setting(key: str) -> str | None:
     if value:
         return value
 
-    try:
-        response = supabase_execute(
-            "load runtime setting",
-            lambda supabase: supabase.table("app_settings").select("value").eq("key", key).limit(1).execute(),
-        )
-        rows = response.data or []
-        return str(rows[0]["value"]) if rows else None
-    except Exception:
-        return None
+    return get_setting(key)
 
 
 def set_runtime_setting(key: str, value: str) -> None:
-    supabase_execute(
-        "save runtime setting",
-        lambda supabase: supabase.table("app_settings").upsert(
-            {"key": key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()},
-            on_conflict="key",
-        ).execute(),
-    )
+    set_setting(key, value)
 
 
 def get_access_token() -> str | None:

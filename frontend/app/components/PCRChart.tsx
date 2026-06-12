@@ -1,43 +1,810 @@
 "use client";
 
-import { ResponsiveContainer, LineChart, Line, CartesianGrid, Tooltip, XAxis, YAxis } from "recharts";
+import { useEffect, useMemo, useState } from "react";
+import { ResponsiveContainer, LineChart, Line, CartesianGrid, Tooltip, XAxis, YAxis, AreaChart, Area, ReferenceLine } from "recharts";
 
-import type { PCRHistoryPoint } from "@/lib/api";
+import {
+  fetchPCRScopedHistory,
+  fetchPCRScopedSubgroups,
+  type PCRHistoryPoint,
+  type PCRScopedHistoryResponse,
+  type PCRScopedSubgroupResponse
+} from "@/lib/api";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 type PCRChartProps = {
   data: PCRHistoryPoint[];
   error?: string | null;
+  underlying?: string;
 };
 
-export function PCRChart({ data, error }: PCRChartProps) {
+type StrikeMode = "full" | "atm" | "custom_atm" | "custom";
+type TimeMode = "all" | "today" | "previous_day" | "last_2_days" | "custom_date" | "custom_range";
+const DELTA_PCR_DISPLAY_CAP = 10;
+
+export function PCRChart({ data, error, underlying }: PCRChartProps) {
+  const [strikeMode, setStrikeMode] = useState<StrikeMode>("full");
+  const [timeMode, setTimeMode] = useState<TimeMode>("all");
+  const [atmWidth, setAtmWidth] = useState(500);
+  const [customAtm, setCustomAtm] = useState("");
+  const [customAtmWidth, setCustomAtmWidth] = useState(500);
+  const [strikeMin, setStrikeMin] = useState("");
+  const [strikeMax, setStrikeMax] = useState("");
+  const [customDate, setCustomDate] = useState("");
+  const [fromTimestamp, setFromTimestamp] = useState("");
+  const [toTimestamp, setToTimestamp] = useState("");
+  const [bucketSize, setBucketSize] = useState(200);
+  const [scopedData, setScopedData] = useState<PCRScopedHistoryResponse | null>(null);
+  const [scopedError, setScopedError] = useState<string | null>(null);
+  const [scopedBusy, setScopedBusy] = useState(false);
+  const [subgroupData, setSubgroupData] = useState<PCRScopedSubgroupResponse | null>(null);
+  const [subgroupError, setSubgroupError] = useState<string | null>(null);
+  const [subgroupBusy, setSubgroupBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadScopedHistory() {
+      setScopedBusy(true);
+      try {
+        const response = await fetchPCRScopedHistory({
+          strikeMode,
+          timeMode,
+          widthPoints: strikeMode === "atm" ? atmWidth : strikeMode === "custom_atm" ? customAtmWidth : undefined,
+          customAtm: strikeMode === "custom_atm" ? Number(customAtm) : undefined,
+          strikeMin: strikeMode === "custom" ? Number(strikeMin) : undefined,
+          strikeMax: strikeMode === "custom" ? Number(strikeMax) : undefined,
+          customDate: timeMode === "custom_date" ? customDate : undefined,
+          fromTimestamp: timeMode === "custom_range" ? fromTimestamp : undefined,
+          toTimestamp: timeMode === "custom_range" ? toTimestamp : undefined,
+          limit: 128
+        });
+
+        if (!cancelled) {
+          setScopedData(response);
+          setScopedError(null);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setScopedError(loadError instanceof Error ? loadError.message : "Failed to load scoped PCR history");
+          setScopedData(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setScopedBusy(false);
+        }
+      }
+    }
+
+    if (strikeMode === "custom") {
+      if (!strikeMin.trim() || !strikeMax.trim()) {
+        setScopedData(null);
+        setScopedError("Enter both strike bounds for custom range mode.");
+        return;
+      }
+      if (Number.isNaN(Number(strikeMin)) || Number.isNaN(Number(strikeMax))) {
+        setScopedData(null);
+        setScopedError("Strike bounds must be numeric.");
+        return;
+      }
+    }
+
+    if (strikeMode === "custom_atm") {
+      if (!customAtm.trim()) {
+        setScopedData(null);
+        setScopedError("Enter a custom ATM strike.");
+        return;
+      }
+      if (Number.isNaN(Number(customAtm))) {
+        setScopedData(null);
+        setScopedError("Custom ATM strike must be numeric.");
+        return;
+      }
+    }
+
+    if (timeMode === "custom_date" && !customDate) {
+      setScopedData(null);
+      setScopedError("Pick a custom date.");
+      return;
+    }
+
+    if (timeMode === "custom_range") {
+      if (!fromTimestamp || !toTimestamp) {
+        setScopedData(null);
+        setScopedError("Enter both start and end date-time values.");
+        return;
+      }
+    }
+
+    loadScopedHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [strikeMode, timeMode, atmWidth, customAtm, customAtmWidth, strikeMin, strikeMax, customDate, fromTimestamp, toTimestamp, underlying]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSubgroups() {
+      setSubgroupBusy(true);
+      try {
+        const response = await fetchPCRScopedSubgroups({
+          strikeMode,
+          timeMode,
+          bucketSize,
+          widthPoints: strikeMode === "atm" ? atmWidth : strikeMode === "custom_atm" ? customAtmWidth : undefined,
+          customAtm: strikeMode === "custom_atm" ? Number(customAtm) : undefined,
+          strikeMin: strikeMode === "custom" ? Number(strikeMin) : undefined,
+          strikeMax: strikeMode === "custom" ? Number(strikeMax) : undefined,
+          customDate: timeMode === "custom_date" ? customDate : undefined,
+          fromTimestamp: timeMode === "custom_range" ? fromTimestamp : undefined,
+          toTimestamp: timeMode === "custom_range" ? toTimestamp : undefined
+        });
+        if (!cancelled) {
+          setSubgroupData(response);
+          setSubgroupError(null);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setSubgroupError(loadError instanceof Error ? loadError.message : "Failed to load subgroup breakdown");
+          setSubgroupData(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setSubgroupBusy(false);
+        }
+      }
+    }
+
+    if (strikeMode === "custom" && (!strikeMin.trim() || !strikeMax.trim() || Number.isNaN(Number(strikeMin)) || Number.isNaN(Number(strikeMax)))) {
+      setSubgroupData(null);
+      return;
+    }
+    if (strikeMode === "custom_atm" && (!customAtm.trim() || Number.isNaN(Number(customAtm)))) {
+      setSubgroupData(null);
+      return;
+    }
+    if (timeMode === "custom_date" && !customDate) {
+      setSubgroupData(null);
+      return;
+    }
+    if (timeMode === "custom_range" && (!fromTimestamp || !toTimestamp)) {
+      setSubgroupData(null);
+      return;
+    }
+
+    loadSubgroups();
+    return () => {
+      cancelled = true;
+    };
+  }, [strikeMode, timeMode, bucketSize, atmWidth, customAtm, customAtmWidth, strikeMin, strikeMax, customDate, fromTimestamp, toTimestamp, underlying]);
+
+  const chartData = scopedData?.points ?? (strikeMode === "full" && timeMode === "all" ? data : []);
+  const activeError = scopedError ?? (strikeMode === "full" && timeMode === "all" ? (error ?? null) : null);
+  const subtitle = buildSubtitle(strikeMode, timeMode, scopedData, underlying);
+  const subgroupHeat = useMemo(() => {
+    const rows = subgroupData?.rows ?? [];
+    const maxAbsDeltaCall = Math.max(1, ...rows.map((row) => Math.abs(row.delta_call_oi)));
+    const maxAbsDeltaPut = Math.max(1, ...rows.map((row) => Math.abs(row.delta_put_oi)));
+    const maxDeltaPcr = Math.max(1, ...rows.map((row) => clipDeltaPcr(row.delta_pcr)));
+    return { maxAbsDeltaCall, maxAbsDeltaPut, maxDeltaPcr };
+  }, [subgroupData]);
+  const oiChangeData = useMemo(
+    () =>
+      chartData.map((point, index) => {
+        const previous = chartData[index - 1];
+        const totalCallOi = "total_call_oi" in point ? Number(point.total_call_oi ?? 0) : 0;
+        const totalPutOi = "total_put_oi" in point ? Number(point.total_put_oi ?? 0) : 0;
+        const previousCallOi = previous && "total_call_oi" in previous ? Number(previous.total_call_oi ?? 0) : 0;
+        const previousPutOi = previous && "total_put_oi" in previous ? Number(previous.total_put_oi ?? 0) : 0;
+        const deltaCallOi = index === 0 ? 0 : roundToTwo(totalCallOi - previousCallOi);
+        const deltaPutOi = index === 0 ? 0 : roundToTwo(totalPutOi - previousPutOi);
+        const adjustedCallOi = deltaCallOi <= 0 ? 1 : deltaCallOi;
+        const adjustedPutOi = deltaPutOi < 0 ? 1 : deltaPutOi;
+
+        return {
+          timestamp: point.timestamp,
+          delta_call_oi: deltaCallOi,
+          delta_put_oi: deltaPutOi,
+          delta_pcr: index === 0 ? 0 : clipDeltaPcr(roundToFour(Math.abs(adjustedPutOi / adjustedCallOi)))
+        };
+      }),
+    [chartData]
+  );
+  const rangeAnchorPcrData = useMemo(() => {
+    if (chartData.length === 0) {
+      return [];
+    }
+
+    const firstPoint = chartData[0];
+    const baseCallOi = "total_call_oi" in firstPoint ? Number(firstPoint.total_call_oi ?? 0) : 0;
+    const basePutOi = "total_put_oi" in firstPoint ? Number(firstPoint.total_put_oi ?? 0) : 0;
+
+    return chartData.map((point, index) => {
+      const totalCallOi = "total_call_oi" in point ? Number(point.total_call_oi ?? 0) : 0;
+      const totalPutOi = "total_put_oi" in point ? Number(point.total_put_oi ?? 0) : 0;
+      const rangeCallChange = roundToTwo(totalCallOi - baseCallOi);
+      const rangePutChange = roundToTwo(totalPutOi - basePutOi);
+      const adjustedRangeCall = rangeCallChange <= 0 ? 1 : rangeCallChange;
+      const adjustedRangePut = rangePutChange < 0 ? 1 : rangePutChange;
+
+      return {
+        timestamp: point.timestamp,
+        total_call_oi: totalCallOi,
+        total_put_oi: totalPutOi,
+        range_call_change: rangeCallChange,
+        range_put_change: rangePutChange,
+        adjusted_call_oi: adjustedRangeCall,
+        adjusted_put_oi: adjustedRangePut,
+        range_delta_pcr: index === 0 ? 0 : clipDeltaPcr(roundToFour(Math.abs(adjustedRangePut / adjustedRangeCall)))
+      };
+    });
+  }, [chartData]);
+  const stepDeltaPcrAxisMax = useMemo(() => computeDeltaPcrAxisMax(oiChangeData.map((point) => point.delta_pcr)), [oiChangeData]);
+  const rangeDeltaPcrAxisMax = useMemo(
+    () => computeDeltaPcrAxisMax(rangeAnchorPcrData.map((point) => point.range_delta_pcr)),
+    [rangeAnchorPcrData]
+  );
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>PCR Over Time</CardTitle>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <CardTitle>PCR Over Time</CardTitle>
+            <p className="mt-1 text-sm text-slate-400">{subtitle}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant={strikeMode === "full" ? "default" : "outline"} onClick={() => setStrikeMode("full")}>
+              Full Chain
+            </Button>
+            <Button type="button" variant={strikeMode === "atm" ? "default" : "outline"} onClick={() => setStrikeMode("atm")}>
+              ATM Range
+            </Button>
+            <Button type="button" variant={strikeMode === "custom_atm" ? "default" : "outline"} onClick={() => setStrikeMode("custom_atm")}>
+              Custom ATM
+            </Button>
+            <Button type="button" variant={strikeMode === "custom" ? "default" : "outline"} onClick={() => setStrikeMode("custom")}>
+              Custom Bounds
+            </Button>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button type="button" variant={timeMode === "all" ? "default" : "outline"} onClick={() => setTimeMode("all")}>
+            All
+          </Button>
+          <Button type="button" variant={timeMode === "today" ? "default" : "outline"} onClick={() => setTimeMode("today")}>
+            Today
+          </Button>
+          <Button type="button" variant={timeMode === "previous_day" ? "default" : "outline"} onClick={() => setTimeMode("previous_day")}>
+            Prev Day
+          </Button>
+          <Button type="button" variant={timeMode === "last_2_days" ? "default" : "outline"} onClick={() => setTimeMode("last_2_days")}>
+            Last 2 Days
+          </Button>
+          <Button type="button" variant={timeMode === "custom_date" ? "default" : "outline"} onClick={() => setTimeMode("custom_date")}>
+            Custom Date
+          </Button>
+          <Button type="button" variant={timeMode === "custom_range" ? "default" : "outline"} onClick={() => setTimeMode("custom_range")}>
+            Date-Time
+          </Button>
+        </div>
+        {strikeMode === "atm" ? (
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              ATM +/- points
+              <input
+                type="number"
+                min={50}
+                max={5000}
+                step={50}
+                value={atmWidth}
+                onChange={(event) => setAtmWidth(Math.max(50, Number(event.target.value) || 500))}
+                className="w-28 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-right text-white outline-none"
+              />
+            </label>
+            {scopedBusy ? <p className="text-sm text-slate-400">Loading scoped history...</p> : null}
+          </div>
+        ) : null}
+        {strikeMode === "custom_atm" ? (
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              ATM strike
+              <input
+                type="number"
+                step={50}
+                value={customAtm}
+                onChange={(event) => setCustomAtm(event.target.value)}
+                className="w-28 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-right text-white outline-none"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              +/- points
+              <input
+                type="number"
+                min={50}
+                max={5000}
+                step={50}
+                value={customAtmWidth}
+                onChange={(event) => setCustomAtmWidth(Math.max(50, Number(event.target.value) || 500))}
+                className="w-28 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-right text-white outline-none"
+              />
+            </label>
+            {scopedBusy ? <p className="text-sm text-slate-400">Loading scoped history...</p> : null}
+          </div>
+        ) : null}
+        {strikeMode === "custom" ? (
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              Strike min
+              <input
+                type="number"
+                step={50}
+                value={strikeMin}
+                onChange={(event) => setStrikeMin(event.target.value)}
+                className="w-28 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-right text-white outline-none"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              Strike max
+              <input
+                type="number"
+                step={50}
+                value={strikeMax}
+                onChange={(event) => setStrikeMax(event.target.value)}
+                className="w-28 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-right text-white outline-none"
+              />
+            </label>
+            {scopedBusy ? <p className="text-sm text-slate-400">Loading scoped history...</p> : null}
+          </div>
+        ) : null}
+        {timeMode === "custom_date" ? (
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              IST date
+              <input
+                type="date"
+                value={customDate}
+                onChange={(event) => setCustomDate(event.target.value)}
+                className="rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-white outline-none"
+              />
+            </label>
+            {scopedBusy ? <p className="text-sm text-slate-400">Loading scoped history...</p> : null}
+          </div>
+        ) : null}
+        {timeMode === "custom_range" ? (
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              From IST
+              <input
+                type="datetime-local"
+                value={fromTimestamp}
+                onChange={(event) => setFromTimestamp(event.target.value)}
+                className="rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-white outline-none"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              To IST
+              <input
+                type="datetime-local"
+                value={toTimestamp}
+                onChange={(event) => setToTimestamp(event.target.value)}
+                className="rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-white outline-none"
+              />
+            </label>
+            {scopedBusy ? <p className="text-sm text-slate-400">Loading scoped history...</p> : null}
+          </div>
+        ) : null}
       </CardHeader>
-      <CardContent className="h-[320px]">
-        {error ? (
-          <p className="text-sm text-danger">{error}</p>
+      <CardContent className="space-y-8">
+        {activeError ? (
+          <p className="text-sm text-danger">{activeError}</p>
+        ) : chartData.length === 0 ? (
+          <p className="text-sm text-slate-400">No PCR history available for the selected range.</p>
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data}>
-              <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-              <XAxis
-                dataKey="timestamp"
-                tickFormatter={(value) => new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                stroke="#7c879f"
-              />
-              <YAxis domain={["auto", "auto"]} stroke="#7c879f" />
-              <Tooltip
-                contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
-                labelFormatter={(value) => new Date(value).toLocaleString()}
-              />
-              <Line type="monotone" dataKey="pcr" stroke="#00d4aa" strokeWidth={3} dot={{ fill: "#00d4aa" }} />
-            </LineChart>
-          </ResponsiveContainer>
+          <>
+            <div className="h-[320px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+                  <XAxis
+                    dataKey="timestamp"
+                    tickFormatter={(value) => formatChartTime(value)}
+                    stroke="#7c879f"
+                  />
+                  <YAxis domain={["auto", "auto"]} stroke="#7c879f" />
+                  <Tooltip
+                    contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
+                    labelFormatter={(value) => formatFullDateTime(value)}
+                    formatter={(value: number) => [formatFixed(value, 4), "PCR"]}
+                  />
+                  <Line type="monotone" dataKey="pcr" stroke="#00d4aa" strokeWidth={3} dot={{ fill: "#00d4aa" }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div>
+              <div className="mb-3">
+                <p className="text-sm font-semibold text-white">OI Change Over Time</p>
+                <p className="text-xs text-slate-400">Same strike and time scope as the PCR chart above.</p>
+              </div>
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={oiChangeData}>
+                    <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+                    <XAxis
+                      dataKey="timestamp"
+                      tickFormatter={(value) => formatChartTime(value)}
+                      stroke="#7c879f"
+                    />
+                    <YAxis tickFormatter={(value) => formatCompact(value)} stroke="#7c879f" />
+                    <Tooltip
+                      contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
+                      labelFormatter={(value) => formatFullDateTime(value)}
+                      formatter={(value: number, name: string) => [formatCompact(value), name === "delta_call_oi" ? "Call OI Change" : "Put OI Change"]}
+                    />
+                    <Area type="monotone" dataKey="delta_call_oi" stroke="#ff5d73" fill="#ff5d73" fillOpacity={0.18} />
+                    <Area type="monotone" dataKey="delta_put_oi" stroke="#00d4aa" fill="#00d4aa" fillOpacity={0.16} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div>
+              <div className="mb-3">
+                <p className="text-sm font-semibold text-white">PCR of OI Change</p>
+                <p className="text-xs text-slate-400">Calculated as change in put OI divided by change in call OI for each scoped timestamp step.</p>
+              </div>
+              <div className="h-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={oiChangeData}>
+                    <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+                    <XAxis
+                      dataKey="timestamp"
+                      tickFormatter={(value) => formatChartTime(value)}
+                      stroke="#7c879f"
+                    />
+                    <YAxis domain={[0, stepDeltaPcrAxisMax]} stroke="#7c879f" />
+                    <Tooltip
+                      contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
+                      labelFormatter={(value) => formatFullDateTime(value)}
+                      formatter={(value) => [formatFixed(value, 4), "Delta PCR"]}
+                    />
+                    <ReferenceLine y={0} stroke="rgba(255,255,255,0.18)" />
+                    <Line type="monotone" dataKey="delta_pcr" stroke="#ffd166" strokeWidth={3} dot={{ fill: "#ffd166" }} connectNulls={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div>
+              <div className="mb-3">
+                <p className="text-sm font-semibold text-white">PCR of OI Change From Range Start</p>
+                <p className="text-xs text-slate-400">Each point compares scoped call and put OI back to the first timestamp in the selected range.</p>
+              </div>
+              <div className="h-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={rangeAnchorPcrData}>
+                    <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+                    <XAxis
+                      dataKey="timestamp"
+                      tickFormatter={(value) => formatChartTime(value)}
+                      stroke="#7c879f"
+                    />
+                    <YAxis domain={[0, rangeDeltaPcrAxisMax]} stroke="#7c879f" />
+                    <Tooltip
+                      contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
+                      labelFormatter={(value) => formatFullDateTime(value)}
+                      formatter={(value) => [formatFixed(value, 4), "Range-Start Delta PCR"]}
+                    />
+                    <ReferenceLine y={0} stroke="rgba(255,255,255,0.18)" />
+                    <Line type="monotone" dataKey="range_delta_pcr" stroke="#7ae582" strokeWidth={3} dot={{ fill: "#7ae582" }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div>
+              <div className="mb-3">
+                <p className="text-sm font-semibold text-white">Range Baseline Breakdown</p>
+                <p className="text-xs text-slate-400">Real scoped values used for the cumulative delta PCR calculation.</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-[1200px] text-sm">
+                  <thead>
+                    <tr className="border-b border-white/10 text-left text-slate-400">
+                      <th className="px-3 py-3 font-medium">Time</th>
+                      <th className="px-3 py-3 font-medium">Call OI In Range</th>
+                      <th className="px-3 py-3 font-medium">Put OI In Range</th>
+                      <th className="px-3 py-3 font-medium">Delta Call Vs Start</th>
+                      <th className="px-3 py-3 font-medium">Delta Put Vs Start</th>
+                      <th className="px-3 py-3 font-medium">Adjusted Call</th>
+                      <th className="px-3 py-3 font-medium">Adjusted Put</th>
+                      <th className="px-3 py-3 font-medium">Delta PCR</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rangeAnchorPcrData.map((row) => (
+                      <tr key={`range-breakdown-${row.timestamp}`} className="border-b border-white/5">
+                        <td className="px-3 py-3 text-slate-100">{formatTableTime(row.timestamp)}</td>
+                        <td className="px-3 py-3 text-slate-200">{formatCompact(row.total_call_oi)}</td>
+                        <td className="px-3 py-3 text-slate-200">{formatCompact(row.total_put_oi)}</td>
+                        <td className={`px-3 py-3 ${row.range_call_change >= 0 ? "text-slate-200" : "text-rose-300"}`}>
+                          {formatSignedCompact(row.range_call_change)}
+                        </td>
+                        <td className={`px-3 py-3 ${row.range_put_change >= 0 ? "text-slate-200" : "text-rose-300"}`}>
+                          {formatSignedCompact(row.range_put_change)}
+                        </td>
+                        <td className="px-3 py-3 text-slate-200">{formatCompact(row.adjusted_call_oi)}</td>
+                        <td className="px-3 py-3 text-slate-200">{formatCompact(row.adjusted_put_oi)}</td>
+                        <td className="px-3 py-3 font-medium text-white">{formatFixed(row.range_delta_pcr, 4)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-white">Fixed Subgroup Breakdown</p>
+                  <p className="text-xs text-slate-400">Bucketed view of the same selected strike and time scope.</p>
+                  {subgroupData ? (
+                    <p className="mt-1 text-xs text-slate-500">
+                      Baseline {formatShortDateTime(subgroupData.baseline_timestamp)} • Latest {formatShortDateTime(subgroupData.latest_timestamp)}
+                    </p>
+                  ) : null}
+                </div>
+                <label className="flex items-center gap-2 text-sm text-slate-300">
+                  Bucket size
+                  <input
+                    type="number"
+                    min={50}
+                    max={5000}
+                    step={50}
+                    value={bucketSize}
+                    onChange={(event) => setBucketSize(Math.max(50, Number(event.target.value) || 200))}
+                    className="w-28 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-right text-white outline-none"
+                  />
+                </label>
+              </div>
+              {subgroupError ? <p className="mb-3 text-sm text-danger">{subgroupError}</p> : null}
+              {subgroupBusy ? <p className="mb-3 text-sm text-slate-400">Loading subgroup breakdown...</p> : null}
+              {subgroupData && subgroupData.rows.length ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-[1400px] text-sm">
+                    <thead>
+                      <tr className="border-b border-white/10 text-left text-slate-400">
+                        <th className="px-3 py-3 font-medium">Subgroup</th>
+                        <th className="px-3 py-3 font-medium">Baseline Call OI</th>
+                        <th className="px-3 py-3 font-medium">Baseline Put OI</th>
+                        <th className="px-3 py-3 font-medium">Current Call OI</th>
+                        <th className="px-3 py-3 font-medium">Current Put OI</th>
+                        <th className="px-3 py-3 font-medium">Delta Call</th>
+                        <th className="px-3 py-3 font-medium">Delta Put</th>
+                        <th className="px-3 py-3 font-medium">Adjusted Call</th>
+                        <th className="px-3 py-3 font-medium">Adjusted Put</th>
+                        <th className="px-3 py-3 font-medium">Baseline PCR</th>
+                        <th className="px-3 py-3 font-medium">Current PCR</th>
+                        <th className="px-3 py-3 font-medium">Delta PCR</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {subgroupData.rows.map((row) => (
+                        <tr key={`subgroup-${row.range}`} className="border-b border-white/5">
+                          <td className="px-3 py-3 font-medium text-white">{row.range}</td>
+                          <td className="px-3 py-3 text-slate-200">{formatCompact(row.baseline_call_oi)}</td>
+                          <td className="px-3 py-3 text-slate-200">{formatCompact(row.baseline_put_oi)}</td>
+                          <td className="px-3 py-3 text-slate-200">{formatCompact(row.current_call_oi)}</td>
+                          <td className="px-3 py-3 text-slate-200">{formatCompact(row.current_put_oi)}</td>
+                          <td
+                            className={`px-3 py-3 ${row.delta_call_oi >= 0 ? "text-slate-100" : "text-rose-100"}`}
+                            style={{ backgroundColor: heatColor(row.delta_call_oi, subgroupHeat.maxAbsDeltaCall, "call") }}
+                          >
+                            {formatSignedCompact(row.delta_call_oi)}
+                          </td>
+                          <td
+                            className={`px-3 py-3 ${row.delta_put_oi >= 0 ? "text-slate-100" : "text-rose-100"}`}
+                            style={{ backgroundColor: heatColor(row.delta_put_oi, subgroupHeat.maxAbsDeltaPut, "put") }}
+                          >
+                            {formatSignedCompact(row.delta_put_oi)}
+                          </td>
+                          <td
+                            className="px-3 py-3 text-slate-100"
+                            style={{ backgroundColor: heatColor(row.adjusted_call_oi, subgroupHeat.maxAbsDeltaCall, "call") }}
+                          >
+                            {formatCompact(row.adjusted_call_oi)}
+                          </td>
+                          <td
+                            className="px-3 py-3 text-slate-100"
+                            style={{ backgroundColor: heatColor(row.adjusted_put_oi, subgroupHeat.maxAbsDeltaPut, "put") }}
+                          >
+                            {formatCompact(row.adjusted_put_oi)}
+                          </td>
+                          <td className="px-3 py-3 text-slate-200">{formatFixed(row.baseline_pcr, 4)}</td>
+                          <td className="px-3 py-3 text-slate-200">{formatFixed(row.current_pcr, 4)}</td>
+                          <td
+                            className="px-3 py-3 font-medium text-slate-950"
+                            style={{ backgroundColor: heatColor(clipDeltaPcr(row.delta_pcr), subgroupHeat.maxDeltaPcr, "ratio") }}
+                          >
+                            {formatFixed(clipDeltaPcr(row.delta_pcr), 4)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+          </>
         )}
       </CardContent>
     </Card>
   );
+}
+
+function buildSubtitle(strikeMode: StrikeMode, timeMode: TimeMode, scopedData: PCRScopedHistoryResponse | null, underlying?: string) {
+  const timeLabel = timeModeLabel(timeMode, scopedData);
+
+  if (!scopedData) {
+    if (strikeMode === "full") {
+      return `${underlying ?? "Selected"} full-chain PCR history, ${timeLabel}`;
+    }
+    if (strikeMode === "atm") {
+      return `ATM-centered strike band PCR history, ${timeLabel}`;
+    }
+    if (strikeMode === "custom_atm") {
+      return `Custom ATM-centered strike band PCR history, ${timeLabel}`;
+    }
+    return `Custom strike-band PCR history, ${timeLabel}`;
+  }
+
+  if (scopedData.strike_mode === "full") {
+    return `${scopedData.underlying} full-chain PCR history, ${timeLabel}`;
+  }
+
+  if (scopedData.strike_mode === "custom_atm" && scopedData.custom_atm != null) {
+    return `${scopedData.underlying} custom ATM ${Math.round(scopedData.custom_atm)} with strikes ${Math.round(scopedData.strike_min ?? 0)}-${Math.round(scopedData.strike_max ?? 0)}, ${timeLabel}`;
+  }
+
+  if (scopedData.strike_mode === "atm" && scopedData.atm_strike != null) {
+    return `${scopedData.underlying} auto ATM ${Math.round(scopedData.atm_strike)} with strikes ${Math.round(scopedData.strike_min ?? 0)}-${Math.round(scopedData.strike_max ?? 0)}, ${timeLabel}`;
+  }
+
+  return `${scopedData.underlying} strikes ${Math.round(scopedData.strike_min ?? 0)}-${Math.round(scopedData.strike_max ?? 0)}, ${timeLabel}`;
+}
+
+function timeModeLabel(timeMode: TimeMode, scopedData: PCRScopedHistoryResponse | null) {
+  if (timeMode === "all") {
+    return "all timestamps";
+  }
+  if (timeMode === "today") {
+    return "today";
+  }
+  if (timeMode === "previous_day") {
+    return "previous trading day";
+  }
+  if (timeMode === "last_2_days") {
+    return "last 2 trading days";
+  }
+  if (scopedData?.from_timestamp && scopedData?.to_timestamp) {
+    return `${formatShortDateTime(scopedData.from_timestamp)} to ${formatShortDateTime(scopedData.to_timestamp)}`;
+  }
+  if (timeMode === "custom_date") {
+    return "custom date";
+  }
+  return "custom date-time range";
+}
+
+function asFiniteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function asValidDate(value: unknown) {
+  const date = new Date(typeof value === "string" || typeof value === "number" ? value : "");
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatChartTime(value: unknown) {
+  const date = asValidDate(value);
+  if (!date) {
+    return "--";
+  }
+  return date.toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Kolkata"
+  });
+}
+
+function formatFullDateTime(value: unknown) {
+  const date = asValidDate(value);
+  if (!date) {
+    return "--";
+  }
+  return date.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+}
+
+function formatShortDateTime(value: string) {
+  const date = asValidDate(value);
+  if (!date) {
+    return "--";
+  }
+  return date.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Kolkata"
+  });
+}
+
+function roundToTwo(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function roundToFour(value: number) {
+  return Math.round(value * 10000) / 10000;
+}
+
+function clipDeltaPcr(value: number) {
+  const numeric = asFiniteNumber(value);
+  if (numeric == null) {
+    return 0;
+  }
+  return Math.min(Math.max(numeric, 0), DELTA_PCR_DISPLAY_CAP);
+}
+
+function computeDeltaPcrAxisMax(values: number[]) {
+  const cappedMax = values.reduce((maxValue, value) => Math.max(maxValue, clipDeltaPcr(value)), 0);
+  if (cappedMax <= 0) {
+    return 1;
+  }
+  const padded = cappedMax * 1.12;
+  return Math.min(DELTA_PCR_DISPLAY_CAP, Math.max(0.5, roundToTwo(padded)));
+}
+
+function formatFixed(value: unknown, digits: number) {
+  const numeric = asFiniteNumber(value);
+  if (numeric == null) {
+    return "--";
+  }
+  return numeric.toFixed(digits);
+}
+
+function formatCompact(value: number) {
+  const numeric = asFiniteNumber(value);
+  if (numeric == null) {
+    return "--";
+  }
+  return new Intl.NumberFormat("en-IN", {
+    maximumFractionDigits: 2,
+    notation: "compact"
+  }).format(numeric);
+}
+
+function formatSignedCompact(value: number) {
+  const numeric = asFiniteNumber(value);
+  if (numeric == null) {
+    return "--";
+  }
+  const compact = formatCompact(Math.abs(numeric));
+  return `${numeric >= 0 ? "+" : "-"}${compact}`;
+}
+
+function formatTableTime(value: string) {
+  return formatChartTime(value);
+}
+
+function heatColor(value: number, maxValue: number, kind: "call" | "put" | "ratio") {
+  const safeValue = asFiniteNumber(value) ?? 0;
+  const safeMax = Math.max(1, asFiniteNumber(maxValue) ?? 1);
+  const intensity = Math.max(0.08, Math.min(Math.abs(safeValue) / safeMax, 1));
+
+  if (kind === "ratio") {
+    return `rgba(255, 209, 102, ${0.12 + intensity * 0.38})`;
+  }
+
+  if (kind === "put") {
+    return safeValue > 0 ? `rgba(0, 212, 170, ${0.12 + intensity * 0.36})` : "rgba(255,255,255,0.04)";
+  }
+
+  return safeValue > 0 ? `rgba(255, 93, 115, ${0.12 + intensity * 0.34})` : "rgba(255,255,255,0.04)";
 }

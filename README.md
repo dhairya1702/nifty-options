@@ -1,11 +1,11 @@
 # Options Analytics Dashboard
 
-Personal full-stack NIFTY options dashboard built with FastAPI, APScheduler, Zerodha Kite Connect, Supabase, Next.js 14, Tailwind CSS, Recharts, and shadcn-style UI primitives.
+Personal full-stack NIFTY options dashboard built with FastAPI, APScheduler, Zerodha Kite Connect, local SQLite, Next.js 14, Tailwind CSS, Recharts, and shadcn-style UI primitives.
 
 ## Overview
 
 - Fetches NIFTY options chain data from Zerodha Kite Connect
-- Stores option snapshots and PCR time series in Supabase
+- Stores option snapshots and PCR time series in a local SQLite database
 - Computes PCR trend, strike-wise OI, support/resistance, and sentiment
 - Lets you start, stop, and reconfigure the snapshot scheduler directly from the browser
 - Auto-refreshes the dashboard every 30 seconds
@@ -14,62 +14,17 @@ Personal full-stack NIFTY options dashboard built with FastAPI, APScheduler, Zer
 
 - Python 3.11+
 - Node.js 18+
-- A Supabase project
 - A Zerodha Kite Connect app with API key and secret
 
-## Supabase Setup
+## Local Database
 
-Run the following SQL in the Supabase SQL editor:
+No external database is required. The backend creates this SQLite database automatically on startup:
 
-```sql
-create extension if not exists pgcrypto;
-
-create table if not exists option_snapshots (
-  id uuid primary key default gen_random_uuid(),
-  timestamp timestamptz not null default now(),
-  underlying text not null,
-  expiry date,
-  tradingsymbol text,
-  instrument_token bigint,
-  strike_price float8 not null,
-  option_type text not null check (option_type in ('CE', 'PE')),
-  oi float8 not null,
-  ltp float8 not null
-);
-
-create index if not exists option_snapshots_timestamp_idx
-  on option_snapshots (underlying, timestamp desc);
-
-create index if not exists option_snapshots_strike_idx
-  on option_snapshots (underlying, strike_price, option_type, timestamp desc);
-
-create unique index if not exists option_snapshots_identity_idx
-  on option_snapshots (underlying, timestamp, expiry, strike_price, option_type);
-
-create table if not exists pcr_timeseries (
-  id uuid primary key default gen_random_uuid(),
-  timestamp timestamptz not null default now(),
-  underlying text not null,
-  expiry date,
-  total_call_oi float8 not null,
-  total_put_oi float8 not null,
-  pcr float8 not null
-);
-
-create index if not exists pcr_timeseries_timestamp_idx
-  on pcr_timeseries (underlying, timestamp desc);
-
-create unique index if not exists pcr_timeseries_identity_idx
-  on pcr_timeseries (underlying, timestamp);
-
-create table if not exists app_settings (
-  key text primary key,
-  value text not null,
-  updated_at timestamptz not null default now()
-);
+```text
+backend/data/options_dashboard.sqlite3
 ```
 
-If you already created the tables earlier, apply an `ALTER TABLE` migration to add `expiry`, `tradingsymbol`, and `instrument_token`, plus the unique indexes above, before using the hardened catch-up/upsert path.
+Set `LOCAL_DB_PATH` in `backend/.env` only if you want the database somewhere else.
 
 ## Backend Setup
 
@@ -86,9 +41,8 @@ Fill `backend/.env` with:
 ZERODHA_API_KEY=
 ZERODHA_API_SECRET=
 ZERODHA_ACCESS_TOKEN=
-SUPABASE_URL=
-SUPABASE_KEY=
 FRONTEND_URL=http://localhost:3000
+LOCAL_DB_PATH=
 ```
 
 ## Zerodha Login
@@ -105,7 +59,7 @@ cd backend
 python seed_historical.py
 ```
 
-The seed script fetches a live NIFTY option chain once, creates 10 historical snapshots spaced 15 minutes apart, applies slight OI variation, and inserts matching PCR rows.
+The seed script fetches a live NIFTY option chain once, creates 10 historical snapshots spaced 15 minutes apart, applies slight OI variation, and inserts matching PCR rows into SQLite.
 
 ## Frontend Setup
 
@@ -141,12 +95,11 @@ The backend should stay on an always-on plan because the APScheduler live collec
 Backend:
 
 ```env
-SUPABASE_URL=
-SUPABASE_KEY=
 ZERODHA_API_KEY=
 ZERODHA_API_SECRET=
 ZERODHA_ACCESS_TOKEN=
 FRONTEND_URL=https://<your-frontend>.onrender.com
+LOCAL_DB_PATH=/app/data/options_dashboard.sqlite3
 ```
 
 Frontend:
@@ -162,10 +115,9 @@ NEXT_PUBLIC_API_URL=https://<your-backend>.onrender.com
 https://<your-backend>.onrender.com/callback
 ```
 
-### Hosted Token Persistence
+### Hosted Database Persistence
 
-- Zerodha login on Render stores the access token in Supabase `app_settings`, not in a local `.env` file.
-- `/auth/status` now checks the persisted token source, so hosted login state survives across Render instances.
+SQLite is local to the backend filesystem. For hosted use, attach persistent storage or mount a volume and point `LOCAL_DB_PATH` at that volume. Without persistent storage, hosted snapshot history can disappear when the instance is rebuilt.
 
 ## Usage Notes
 
@@ -174,7 +126,7 @@ https://<your-backend>.onrender.com/callback
 - `Start` first fills any missing recent 15-minute history for the selected underlying, then creates or restarts the live interval job.
 - `Stop` removes the interval job but keeps the in-memory status available.
 - Updating the interval while running immediately recreates the job with the new cadence.
-- Zerodha access token is read from `backend/.env` at request time, so a successful login updates future requests without restarting FastAPI.
+- Zerodha access token is read from `backend/.env` first, then from the local SQLite `app_settings` table.
 - Zerodha option quotes are fetched using exchange-prefixed trading symbols, while instrument discovery still starts from the NFO instruments master.
 - The auth callback redirects browsers by default, but `GET /callback?request_token=...&format=json` also returns `{ "success": true, "message": "Login successful" }`.
 - If the Zerodha API call fails during a scheduled run, the error is logged and the scheduler stays alive.

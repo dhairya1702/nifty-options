@@ -7,9 +7,9 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query
 
+from local_db import pcr_rows_for_analytics
 from routes.oi import get_latest_snapshot_groups, get_reference_strike, get_window_rows
 from scheduler import option_scheduler
-from supabase_client import supabase_execute
 from zerodha import get_nearest_expiry_for_underlying
 
 
@@ -18,16 +18,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 def _fetch_pcr_rows(limit: int = 200) -> list[dict]:
-    response = supabase_execute(
-        "fetch analytics PCR rows",
-        lambda supabase: supabase.table("pcr_timeseries")
-        .select("timestamp,pcr,total_call_oi,total_put_oi")
-        .eq("underlying", option_scheduler.underlying)
-        .order("timestamp", desc=True)
-        .limit(limit)
-        .execute(),
-    )
-    return list(reversed(response.data or []))
+    return pcr_rows_for_analytics(option_scheduler.underlying, limit)
 
 
 def _parse_ist_day(timestamp: str) -> str:

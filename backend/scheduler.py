@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from supabase_client import supabase_execute
+from local_db import latest_pcr_row, latest_snapshot_timestamp, snapshot_count, upsert_option_snapshots, upsert_pcr_rows
 from zerodha import SUPPORTED_UNDERLYINGS, get_option_chain
 
 
@@ -23,7 +23,7 @@ class OptionDataScheduler:
     def __init__(self) -> None:
         self.scheduler = BackgroundScheduler(timezone=timezone.utc)
         self.running = False
-        self.interval_minutes = 15
+        self.interval_minutes = 5
         self.underlying = "NIFTY"
         self.last_run: datetime | None = None
         self.next_run: datetime | None = None
@@ -74,26 +74,16 @@ class OptionDataScheduler:
             pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi else 0.0
             expiry = next((row.get("expiry") for row in option_chain if row.get("expiry")), None)
 
-            supabase_execute(
-                "store live option snapshots",
-                lambda supabase: supabase.table("option_snapshots").upsert(
-                    snapshot_rows,
-                    on_conflict="underlying,timestamp,expiry,strike_price,option_type",
-                ).execute(),
-            )
-            supabase_execute(
-                "store live PCR row",
-                lambda supabase: supabase.table("pcr_timeseries").upsert(
-                    {
-                        "timestamp": timestamp,
-                        "underlying": self.underlying,
-                        "expiry": expiry,
-                        "total_call_oi": total_call_oi,
-                        "total_put_oi": total_put_oi,
-                        "pcr": pcr,
-                    },
-                    on_conflict="underlying,timestamp",
-                ).execute(),
+            upsert_option_snapshots(snapshot_rows)
+            upsert_pcr_rows(
+                {
+                    "timestamp": timestamp,
+                    "underlying": self.underlying,
+                    "expiry": expiry,
+                    "total_call_oi": total_call_oi,
+                    "total_put_oi": total_put_oi,
+                    "pcr": pcr,
+                }
             )
 
             self.last_run = datetime.now(timezone.utc)
@@ -112,49 +102,21 @@ class OptionDataScheduler:
 
     def _latest_data_status(self) -> dict[str, Any] | None:
         try:
-            latest_pcr = supabase_execute(
-                "fetch latest scheduler PCR row",
-                lambda supabase: supabase.table("pcr_timeseries")
-                .select("timestamp,expiry,pcr,total_call_oi,total_put_oi")
-                .eq("underlying", self.underlying)
-                .order("timestamp", desc=True)
-                .limit(1)
-                .execute(),
-            )
-            latest_snapshot = supabase_execute(
-                "fetch latest scheduler snapshot timestamp",
-                lambda supabase: supabase.table("option_snapshots")
-                .select("timestamp")
-                .eq("underlying", self.underlying)
-                .order("timestamp", desc=True)
-                .limit(1)
-                .execute(),
-            )
-
-            latest_pcr_row = (latest_pcr.data or [None])[0]
-            latest_snapshot_row = (latest_snapshot.data or [None])[0]
-            latest_snapshot_timestamp = latest_snapshot_row["timestamp"] if latest_snapshot_row else None
+            latest_pcr = latest_pcr_row(self.underlying)
+            latest_snapshot = latest_snapshot_timestamp(self.underlying)
 
             snapshot_contracts = 0
-            if latest_snapshot_timestamp:
-                snapshot_count = supabase_execute(
-                    "count latest scheduler snapshot rows",
-                    lambda supabase: supabase.table("option_snapshots")
-                    .select("id", count="exact")
-                    .eq("underlying", self.underlying)
-                    .eq("timestamp", latest_snapshot_timestamp)
-                    .execute(),
-                )
-                snapshot_contracts = snapshot_count.count or 0
+            if latest_snapshot:
+                snapshot_contracts = snapshot_count(self.underlying, latest_snapshot)
 
             return {
-                "latest_snapshot_timestamp": latest_snapshot_timestamp,
+                "latest_snapshot_timestamp": latest_snapshot,
                 "snapshot_contracts": snapshot_contracts,
-                "latest_pcr_timestamp": latest_pcr_row["timestamp"] if latest_pcr_row else None,
-                "latest_pcr": float(latest_pcr_row["pcr"]) if latest_pcr_row else None,
-                "total_call_oi": float(latest_pcr_row["total_call_oi"]) if latest_pcr_row else None,
-                "total_put_oi": float(latest_pcr_row["total_put_oi"]) if latest_pcr_row else None,
-                "expiry": latest_pcr_row["expiry"] if latest_pcr_row else None,
+                "latest_pcr_timestamp": latest_pcr["timestamp"] if latest_pcr else None,
+                "latest_pcr": float(latest_pcr["pcr"]) if latest_pcr else None,
+                "total_call_oi": float(latest_pcr["total_call_oi"]) if latest_pcr else None,
+                "total_put_oi": float(latest_pcr["total_put_oi"]) if latest_pcr else None,
+                "expiry": latest_pcr["expiry"] if latest_pcr else None,
             }
         except Exception:
             logger.exception("Failed to build scheduler data status")

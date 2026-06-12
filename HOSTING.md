@@ -16,14 +16,14 @@ Use these environment variables:
 ```env
 ZERODHA_API_KEY=
 ZERODHA_API_SECRET=
-SUPABASE_URL=
-SUPABASE_KEY=
 FRONTEND_URL=https://your-frontend-domain.vercel.app
+LOCAL_DB_PATH=/app/data/options_dashboard.sqlite3
 ```
 
 Notes:
 
-- Do not manually set `ZERODHA_ACCESS_TOKEN` for hosted use. The app now stores the token in Supabase after login.
+- Do not manually set `ZERODHA_ACCESS_TOKEN` for hosted use. The app stores the token in the local SQLite `app_settings` table after login.
+- SQLite is local filesystem storage. On Railway/Render/etc., attach persistent storage and point `LOCAL_DB_PATH` at that mounted path if you want history to survive rebuilds.
 - The backend health endpoint is `/health`.
 - Railway should expose the service publicly over HTTPS.
 
@@ -57,14 +57,9 @@ https://your-frontend.vercel.app
 
 Then set the backend `FRONTEND_URL` env var to that exact frontend URL.
 
-## 3. Supabase migration
+## 3. Local database
 
-Run both SQL files:
-
-- `backend/sql/001_harden_option_storage.sql`
-- `backend/sql/002_runtime_settings.sql`
-
-The second file adds a durable key/value store for hosted runtime settings like the Zerodha access token.
+No migration is needed. The backend creates the SQLite schema automatically on startup.
 
 ## 4. Real login flow after hosting
 
@@ -74,7 +69,7 @@ Once both frontend and backend are deployed:
 2. Click login.
 3. Finish Zerodha auth.
 4. Zerodha redirects back to the hosted backend callback.
-5. The backend stores the access token in Supabase.
+5. The backend stores the access token in SQLite.
 6. Use `Start` from the hosted frontend.
 
 ## 5. Result

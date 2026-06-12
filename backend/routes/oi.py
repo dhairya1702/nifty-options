@@ -5,8 +5,8 @@ from math import floor
 
 from fastapi import APIRouter, HTTPException, Query
 
+from local_db import latest_snapshot_timestamps, snapshot_rows
 from scheduler import option_scheduler
-from supabase_client import supabase_execute
 from zerodha import get_spot_ltp
 
 
@@ -14,24 +14,7 @@ router = APIRouter(prefix="/oi", tags=["oi"])
 
 
 def _latest_timestamps() -> tuple[str | None, str | None]:
-    response = supabase_execute(
-        "fetch latest option snapshot timestamps",
-        lambda supabase: supabase.table("option_snapshots")
-        .select("timestamp")
-        .eq("underlying", option_scheduler.underlying)
-        .order("timestamp", desc=True)
-        .limit(500)
-        .execute(),
-    )
-    timestamps = []
-    seen: set[str] = set()
-    for row in response.data or []:
-        timestamp = row["timestamp"]
-        if timestamp not in seen:
-            seen.add(timestamp)
-            timestamps.append(timestamp)
-        if len(timestamps) == 2:
-            break
+    timestamps = latest_snapshot_timestamps(option_scheduler.underlying, limit=2)
     latest = timestamps[0] if timestamps else None
     previous = timestamps[1] if len(timestamps) > 1 else None
     return latest, previous
@@ -41,15 +24,6 @@ def _group_snapshot(timestamp: str | None) -> dict[float, dict[str, float]]:
     if not timestamp:
         return {}
 
-    response = supabase_execute(
-        "fetch option snapshot group",
-        lambda supabase: supabase.table("option_snapshots")
-        .select("strike_price,option_type,oi,ltp")
-        .eq("underlying", option_scheduler.underlying)
-        .eq("timestamp", timestamp)
-        .order("strike_price")
-        .execute(),
-    )
     grouped: dict[float, dict[str, float]] = defaultdict(
         lambda: {
             "strike_price": 0.0,
@@ -59,7 +33,7 @@ def _group_snapshot(timestamp: str | None) -> dict[float, dict[str, float]]:
             "put_ltp": 0.0,
         }
     )
-    for row in response.data or []:
+    for row in snapshot_rows(option_scheduler.underlying, timestamp):
         strike = float(row["strike_price"])
         item = grouped[strike]
         item["strike_price"] = strike

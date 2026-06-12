@@ -7,7 +7,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_frontend_url
-from routes import analytics, auth, levels, market, oi, pcr, scheduler, sentiment
+from local_db import init_db
+from routes import analytics, auth, levels, market, oi, option_chain, pcr, scheduler, sentiment
 from scheduler import option_scheduler
 
 
@@ -16,6 +17,7 @@ logging.basicConfig(level=logging.INFO)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    init_db()
     option_scheduler.start_engine()
     yield
     option_scheduler.shutdown()
@@ -39,6 +41,7 @@ def health() -> dict:
 
 app.include_router(auth.router)
 app.include_router(scheduler.router)
+app.include_router(option_chain.router)
 app.include_router(pcr.router)
 app.include_router(oi.router)
 app.include_router(levels.router)

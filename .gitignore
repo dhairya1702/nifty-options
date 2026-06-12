@@ -4,6 +4,7 @@
 
 backend/.env
 backend/.venv/
+backend/data/
 backend/__pycache__/
 backend/routes/__pycache__/
 backend/*.pyc
