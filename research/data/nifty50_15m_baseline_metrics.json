@@ -1,0 +1,103 @@
+{
+  "dataset_rows": 69907,
+  "train_rows": 55925,
+  "test_rows": 13982,
+  "train_date_min": "2015-01-12 09:15:00",
+  "train_date_max": "2024-02-07 14:45:00",
+  "test_date_min": "2024-02-07 15:00:00",
+  "test_date_max": "2026-05-19 11:00:00",
+  "target_up_rate_train": 0.5123468931604828,
+  "target_up_rate_test": 0.5084394221141467,
+  "feature_target_correlations": {
+    "dist_prev_close": 0.029491568428314224,
+    "bar_index_in_day": 0.024460251551363933,
+    "breakout_above_opening_range": 0.024413120728495597,
+    "dist_prev_high": 0.023821774454627777,
+    "dist_prev_low": 0.023818563566277626,
+    "minutes_from_open": 0.023399520866202075,
+    "hour": 0.021994583941588895,
+    "dist_day_low_so_far": 0.01919680567352702,
+    "dist_mean_16": 0.017226395918199657,
+    "dist_opening_range_high": 0.016318911913425608,
+    "intraday_range_position": 0.014447710963856813,
+    "dist_opening_range_low": 0.012530241076859567,
+    "return_8": 0.012277456696124352,
+    "vix_dist_mean_8": -0.01196461354254664,
+    "gap_from_prev_close": 0.011951312866313209,
+    "close_to_low": -0.011887237910769476,
+    "dist_day_high_so_far": 0.010829631587521845,
+    "candle_return": -0.010791595774494544,
+    "weekday": -0.010466717346193857,
+    "vix_dist_mean_4": -0.010435960935396683,
+    "vix_return_4": -0.009353816284787384,
+    "return_1": -0.009277401903824246,
+    "vix_rolling_std_8": -0.009185178335879758,
+    "rolling_std_8": -0.007532579606877692,
+    "return_4": 0.007175392797491262,
+    "dist_mean_8": 0.0065976437296571475,
+    "vix_return_1": -0.0065938322420992556,
+    "minute": 0.006277337698296067,
+    "rolling_std_4": -0.006156398940530933,
+    "return_2": -0.0051666469514409325,
+    "hl_range": -0.005068319189178486,
+    "close_to_high": 0.004580164741562307,
+    "dist_mean_4": -0.0045441072399033345,
+    "vix_spread_vs_nifty_return": -0.004484918618555229,
+    "breakdown_below_opening_range": -0.003718480391589565,
+    "opening_range_width_pct": -0.003333721738702116,
+    "vix_rolling_std_4": -0.0033224724143986035,
+    "rolling_std_16": -0.003085386159087984,
+    "vix_hl_range": -0.0018043515109738837,
+    "prev_day_range_pct": 0.0005965312162145075
+  },
+  "baselines": [
+    {
+      "name": "always_up",
+      "accuracy": 0.5084394221141467,
+      "precision_up": 0.5084394221141467,
+      "recall_up": 1.0,
+      "f1_up": 0.6741264046275662,
+      "support": 13982
+    },
+    {
+      "name": "momentum_continuation",
+      "accuracy": 0.48512373051065655,
+      "precision_up": 0.4936708860759494,
+      "recall_up": 0.4937403291602194,
+      "f1_up": 0.49370560517617273,
+      "support": 13982
+    },
+    {
+      "name": "intraday_bucket",
+      "accuracy": 0.5091546273780575,
+      "precision_up": 0.514252607184241,
+      "recall_up": 0.6242790828527219,
+      "f1_up": 0.5639494249952348,
+      "support": 13982
+    },
+    {
+      "name": "logistic_regression",
+      "accuracy": 0.5235302531826634,
+      "precision_up": 0.523748804590373,
+      "recall_up": 0.6933464622309748,
+      "f1_up": 0.5967312348668281,
+      "support": 13982
+    },
+    {
+      "name": "random_forest",
+      "accuracy": 0.5412673437276498,
+      "precision_up": 0.5394035604943871,
+      "recall_up": 0.6691517794345196,
+      "f1_up": 0.5973129080863887,
+      "support": 13982
+    },
+    {
+      "name": "hist_gradient_boosting",
+      "accuracy": 0.5448433700472035,
+      "precision_up": 0.5455323310108788,
+      "recall_up": 0.6277957518638346,
+      "f1_up": 0.58378024852845,
+      "support": 13982
+    }
+  ]
+}

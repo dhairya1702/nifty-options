@@ -144,7 +144,10 @@ export type SchedulerStatus = {
   underlying: string;
   supported_underlyings: string[];
   last_run: string | null;
+  last_attempt: string | null;
   next_run: string | null;
+  last_error?: string | null;
+  last_outcome?: string | null;
   data_status?: {
     latest_snapshot_timestamp: string | null;
     snapshot_contracts: number;

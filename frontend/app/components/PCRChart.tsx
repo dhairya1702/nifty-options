@@ -17,13 +17,15 @@ type PCRChartProps = {
   data: PCRHistoryPoint[];
   error?: string | null;
   underlying?: string;
+  refreshToken?: string;
 };
 
 type StrikeMode = "full" | "atm" | "custom_atm" | "custom";
 type TimeMode = "all" | "today" | "previous_day" | "last_2_days" | "custom_date" | "custom_range";
 const DELTA_PCR_DISPLAY_CAP = 10;
+const STORAGE_KEY = "options-dashboard:pcr-chart-preferences";
 
-export function PCRChart({ data, error, underlying }: PCRChartProps) {
+export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProps) {
   const [strikeMode, setStrikeMode] = useState<StrikeMode>("full");
   const [timeMode, setTimeMode] = useState<TimeMode>("all");
   const [atmWidth, setAtmWidth] = useState(500);
@@ -41,8 +43,65 @@ export function PCRChart({ data, error, underlying }: PCRChartProps) {
   const [subgroupData, setSubgroupData] = useState<PCRScopedSubgroupResponse | null>(null);
   const [subgroupError, setSubgroupError] = useState<string | null>(null);
   const [subgroupBusy, setSubgroupBusy] = useState(false);
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const storageScope = underlying ?? "default";
 
   useEffect(() => {
+    setPreferencesReady(false);
+    const preferences = readStoredPreferences(storageScope);
+    setStrikeMode(preferences.strikeMode);
+    setTimeMode(preferences.timeMode);
+    setAtmWidth(preferences.atmWidth);
+    setCustomAtm(preferences.customAtm);
+    setCustomAtmWidth(preferences.customAtmWidth);
+    setStrikeMin(preferences.strikeMin);
+    setStrikeMax(preferences.strikeMax);
+    setCustomDate(preferences.customDate);
+    setFromTimestamp(preferences.fromTimestamp);
+    setToTimestamp(preferences.toTimestamp);
+    setBucketSize(preferences.bucketSize);
+    setPreferencesReady(true);
+  }, [storageScope]);
+
+  useEffect(() => {
+    if (!preferencesReady) {
+      return;
+    }
+
+    writeStoredPreferences(storageScope, {
+      strikeMode,
+      timeMode,
+      atmWidth,
+      customAtm,
+      customAtmWidth,
+      strikeMin,
+      strikeMax,
+      customDate,
+      fromTimestamp,
+      toTimestamp,
+      bucketSize
+    });
+  }, [
+    preferencesReady,
+    storageScope,
+    strikeMode,
+    timeMode,
+    atmWidth,
+    customAtm,
+    customAtmWidth,
+    strikeMin,
+    strikeMax,
+    customDate,
+    fromTimestamp,
+    toTimestamp,
+    bucketSize
+  ]);
+
+  useEffect(() => {
+    if (!preferencesReady) {
+      return;
+    }
+
     let cancelled = false;
 
     async function loadScopedHistory() {
@@ -121,9 +180,13 @@ export function PCRChart({ data, error, underlying }: PCRChartProps) {
     return () => {
       cancelled = true;
     };
-  }, [strikeMode, timeMode, atmWidth, customAtm, customAtmWidth, strikeMin, strikeMax, customDate, fromTimestamp, toTimestamp, underlying]);
+  }, [strikeMode, timeMode, atmWidth, customAtm, customAtmWidth, strikeMin, strikeMax, customDate, fromTimestamp, toTimestamp, underlying, refreshToken, preferencesReady]);
 
   useEffect(() => {
+    if (!preferencesReady) {
+      return;
+    }
+
     let cancelled = false;
 
     async function loadSubgroups() {
@@ -178,7 +241,7 @@ export function PCRChart({ data, error, underlying }: PCRChartProps) {
     return () => {
       cancelled = true;
     };
-  }, [strikeMode, timeMode, bucketSize, atmWidth, customAtm, customAtmWidth, strikeMin, strikeMax, customDate, fromTimestamp, toTimestamp, underlying]);
+  }, [strikeMode, timeMode, bucketSize, atmWidth, customAtm, customAtmWidth, strikeMin, strikeMax, customDate, fromTimestamp, toTimestamp, underlying, refreshToken, preferencesReady]);
 
   const chartData = scopedData?.points ?? (strikeMode === "full" && timeMode === "all" ? data : []);
   const activeError = scopedError ?? (strikeMode === "full" && timeMode === "all" ? (error ?? null) : null);
@@ -807,4 +870,103 @@ function heatColor(value: number, maxValue: number, kind: "call" | "put" | "rati
   }
 
   return safeValue > 0 ? `rgba(255, 93, 115, ${0.12 + intensity * 0.34})` : "rgba(255,255,255,0.04)";
+}
+
+type StoredPreferences = {
+  strikeMode: StrikeMode;
+  timeMode: TimeMode;
+  atmWidth: number;
+  customAtm: string;
+  customAtmWidth: number;
+  strikeMin: string;
+  strikeMax: string;
+  customDate: string;
+  fromTimestamp: string;
+  toTimestamp: string;
+  bucketSize: number;
+};
+
+function defaultPreferences(): StoredPreferences {
+  return {
+    strikeMode: "full",
+    timeMode: "all",
+    atmWidth: 500,
+    customAtm: "",
+    customAtmWidth: 500,
+    strikeMin: "",
+    strikeMax: "",
+    customDate: "",
+    fromTimestamp: "",
+    toTimestamp: "",
+    bucketSize: 200
+  };
+}
+
+function readStoredPreferences(scope: string): StoredPreferences {
+  if (typeof window === "undefined") {
+    return defaultPreferences();
+  }
+
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return defaultPreferences();
+    }
+
+    const stored = JSON.parse(raw) as Record<string, Partial<StoredPreferences>>;
+    const scoped = stored[scope];
+    if (!scoped) {
+      return defaultPreferences();
+    }
+
+    return {
+      strikeMode: isStrikeMode(scoped.strikeMode) ? scoped.strikeMode : "full",
+      timeMode: isTimeMode(scoped.timeMode) ? scoped.timeMode : "all",
+      atmWidth: asStoredNumber(scoped.atmWidth, 500),
+      customAtm: typeof scoped.customAtm === "string" ? scoped.customAtm : "",
+      customAtmWidth: asStoredNumber(scoped.customAtmWidth, 500),
+      strikeMin: typeof scoped.strikeMin === "string" ? scoped.strikeMin : "",
+      strikeMax: typeof scoped.strikeMax === "string" ? scoped.strikeMax : "",
+      customDate: typeof scoped.customDate === "string" ? scoped.customDate : "",
+      fromTimestamp: typeof scoped.fromTimestamp === "string" ? scoped.fromTimestamp : "",
+      toTimestamp: typeof scoped.toTimestamp === "string" ? scoped.toTimestamp : "",
+      bucketSize: asStoredNumber(scoped.bucketSize, 200)
+    };
+  } catch {
+    return defaultPreferences();
+  }
+}
+
+function writeStoredPreferences(scope: string, preferences: StoredPreferences) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const stored = raw ? (JSON.parse(raw) as Record<string, StoredPreferences>) : {};
+    stored[scope] = preferences;
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
+  } catch {
+    // Ignore storage failures and keep the in-memory state usable.
+  }
+}
+
+function isStrikeMode(value: unknown): value is StrikeMode {
+  return value === "full" || value === "atm" || value === "custom_atm" || value === "custom";
+}
+
+function isTimeMode(value: unknown): value is TimeMode {
+  return (
+    value === "all" ||
+    value === "today" ||
+    value === "previous_day" ||
+    value === "last_2_days" ||
+    value === "custom_date" ||
+    value === "custom_range"
+  );
+}
+
+function asStoredNumber(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }

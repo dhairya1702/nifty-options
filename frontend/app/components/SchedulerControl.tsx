@@ -34,6 +34,7 @@ export function SchedulerControl({
 }: SchedulerControlProps) {
   const running = status?.running ?? false;
   const lastRunLabel = formatRelative(status?.last_run, "ago");
+  const lastAttemptLabel = formatRelative(status?.last_attempt, "ago");
   const nextRunLabel = formatRelative(status?.next_run, "");
   const dataStatus = status?.data_status;
   const latestSnapshotLabel = formatTimestamp(dataStatus?.latest_snapshot_timestamp);
@@ -90,6 +91,7 @@ export function SchedulerControl({
 
         <div className="mt-5 flex flex-col gap-2 text-sm text-slate-400 md:flex-row md:justify-between">
           <p>Underlying: {status?.underlying ?? selectedUnderlying}</p>
+          <p>Last attempt: {lastAttemptLabel}</p>
           <p>Last run: {lastRunLabel}</p>
           <p>Next run: {nextRunLabel}</p>
         </div>
@@ -121,10 +123,15 @@ export function SchedulerControl({
           <div>
             <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Expiry</p>
             <p className="mt-2 text-slate-100">{dataStatus?.expiry ?? "--"}</p>
-            <p className="mt-1 text-slate-400">{running ? "Live collection armed" : "Scheduler idle"}</p>
+            <p className="mt-1 text-slate-400">{formatOutcome(status?.last_outcome, running)}</p>
           </div>
         </div>
 
+        {status?.last_error ? (
+          <p className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
+            Scheduler error: {status.last_error}
+          </p>
+        ) : null}
         {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
       </CardContent>
     </Card>
@@ -156,4 +163,26 @@ function formatThousands(value: number | null | undefined) {
     return "--";
   }
   return `${(value / 1000).toFixed(1)}K`;
+}
+
+function formatOutcome(value: string | null | undefined, running: boolean) {
+  if (value === "success") {
+    return "Last job inserted data";
+  }
+  if (value === "skipped_market_closed") {
+    return "Last job skipped: market closed";
+  }
+  if (value === "skipped_no_data") {
+    return "Last job skipped: no option data";
+  }
+  if (value === "failed") {
+    return "Last job failed";
+  }
+  if (value === "starting") {
+    return "Starting collection";
+  }
+  if (value === "stopped") {
+    return "Scheduler idle";
+  }
+  return running ? "Live collection armed" : "Scheduler idle";
 }

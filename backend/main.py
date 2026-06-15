@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,10 +16,25 @@ from scheduler import option_scheduler
 logging.basicConfig(level=logging.INFO)
 
 
+def _cors_origins() -> list[str]:
+    frontend_url = get_frontend_url()
+    origins = {frontend_url}
+    parsed = urlparse(frontend_url)
+
+    if parsed.scheme and parsed.port:
+        if parsed.hostname == "localhost":
+            origins.add(f"{parsed.scheme}://127.0.0.1:{parsed.port}")
+        elif parsed.hostname == "127.0.0.1":
+            origins.add(f"{parsed.scheme}://localhost:{parsed.port}")
+
+    return sorted(origins)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
     option_scheduler.start_engine()
+    option_scheduler.restore()
     yield
     option_scheduler.shutdown()
 
@@ -27,7 +43,7 @@ app = FastAPI(title="Options Analytics Dashboard API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[get_frontend_url()],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
