@@ -76,6 +76,25 @@ Fill `frontend/.env.local` with:
 NEXT_PUBLIC_API_URL=http://127.0.0.1:8001
 ```
 
+## One-Command Launch
+
+After `backend/.env` and `frontend/.env.local` are set up, you can start both services from the repo root with:
+
+```bash
+chmod +x laucnh
+./laucnh
+```
+
+The script:
+
+- creates `backend/.venv` if missing
+- installs backend requirements
+- installs frontend packages if `node_modules` is missing
+- starts the backend on `http://127.0.0.1:8001`
+- starts the frontend on `http://localhost:3000`
+
+Press `Ctrl+C` to stop both services together.
+
 ## Render Deployment
 
 This repo now includes a root `render.yaml` Blueprint for deploying both services from the same GitHub repo:

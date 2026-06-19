@@ -1,0 +1,85 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BACKEND_DIR="$ROOT_DIR/backend"
+FRONTEND_DIR="$ROOT_DIR/frontend"
+BACKEND_HOST="127.0.0.1"
+BACKEND_PORT="8001"
+FRONTEND_PORT="3000"
+
+backend_pid=""
+frontend_pid=""
+
+cleanup() {
+  if [[ -n "$backend_pid" ]] && kill -0 "$backend_pid" 2>/dev/null; then
+    kill "$backend_pid" 2>/dev/null || true
+  fi
+
+  if [[ -n "$frontend_pid" ]] && kill -0 "$frontend_pid" 2>/dev/null; then
+    kill "$frontend_pid" 2>/dev/null || true
+  fi
+}
+
+trap cleanup EXIT INT TERM
+
+require_file() {
+  local file_path="$1"
+  local help_text="$2"
+
+  if [[ ! -f "$file_path" ]]; then
+    echo "Missing required file: $file_path"
+    echo "$help_text"
+    exit 1
+  fi
+}
+
+echo "Starting Options Dashboard from $ROOT_DIR"
+
+require_file "$BACKEND_DIR/.env" "Create it from backend/.env.example and add your Zerodha values."
+require_file "$FRONTEND_DIR/.env.local" "Create it from frontend/.env.local.example."
+
+if [[ ! -d "$BACKEND_DIR/.venv" ]]; then
+  echo "Creating backend virtual environment..."
+  (
+    cd "$BACKEND_DIR"
+    python3 -m venv .venv
+  )
+fi
+
+if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
+  echo "Installing frontend dependencies..."
+  (
+    cd "$FRONTEND_DIR"
+    npm install
+  )
+fi
+
+echo "Installing backend dependencies..."
+(
+  cd "$BACKEND_DIR"
+  source .venv/bin/activate
+  pip install -r requirements.txt >/dev/null
+)
+
+echo "Launching backend on http://$BACKEND_HOST:$BACKEND_PORT"
+(
+  cd "$BACKEND_DIR"
+  source .venv/bin/activate
+  exec uvicorn main:app --reload --host "$BACKEND_HOST" --port "$BACKEND_PORT"
+) &
+backend_pid=$!
+
+echo "Launching frontend on http://localhost:$FRONTEND_PORT"
+(
+  cd "$FRONTEND_DIR"
+  exec npm run dev
+) &
+frontend_pid=$!
+
+echo "Backend PID: $backend_pid"
+echo "Frontend PID: $frontend_pid"
+echo "Press Ctrl+C to stop both services."
+
+wait "$backend_pid" "$frontend_pid"
