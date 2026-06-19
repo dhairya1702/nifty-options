@@ -28,6 +28,8 @@ const STORAGE_KEY = "options-dashboard:pcr-chart-preferences";
 export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProps) {
   const [strikeMode, setStrikeMode] = useState<StrikeMode>("full");
   const [timeMode, setTimeMode] = useState<TimeMode>("all");
+  const [showSma, setShowSma] = useState(true);
+  const [smaPeriod, setSmaPeriod] = useState(5);
   const [atmWidth, setAtmWidth] = useState(500);
   const [customAtm, setCustomAtm] = useState("");
   const [customAtmWidth, setCustomAtmWidth] = useState(500);
@@ -51,6 +53,8 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
     const preferences = readStoredPreferences(storageScope);
     setStrikeMode(preferences.strikeMode);
     setTimeMode(preferences.timeMode);
+    setShowSma(preferences.showSma);
+    setSmaPeriod(preferences.smaPeriod);
     setAtmWidth(preferences.atmWidth);
     setCustomAtm(preferences.customAtm);
     setCustomAtmWidth(preferences.customAtmWidth);
@@ -71,6 +75,8 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
     writeStoredPreferences(storageScope, {
       strikeMode,
       timeMode,
+      showSma,
+      smaPeriod,
       atmWidth,
       customAtm,
       customAtmWidth,
@@ -86,6 +92,8 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
     storageScope,
     strikeMode,
     timeMode,
+    showSma,
+    smaPeriod,
     atmWidth,
     customAtm,
     customAtmWidth,
@@ -244,6 +252,10 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
   }, [strikeMode, timeMode, bucketSize, atmWidth, customAtm, customAtmWidth, strikeMin, strikeMax, customDate, fromTimestamp, toTimestamp, underlying, refreshToken, preferencesReady]);
 
   const chartData = scopedData?.points ?? (strikeMode === "full" && timeMode === "all" ? data : []);
+  const pcrChartData = useMemo(
+    () => addSimpleMovingAverage(chartData, Math.max(2, smaPeriod)),
+    [chartData, smaPeriod]
+  );
   const activeError = scopedError ?? (strikeMode === "full" && timeMode === "all" ? (error ?? null) : null);
   const subtitle = buildSubtitle(strikeMode, timeMode, scopedData, underlying);
   const subgroupHeat = useMemo(() => {
@@ -275,6 +287,10 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
       }),
     [chartData]
   );
+  const oiChangeChartData = useMemo(
+    () => addSimpleMovingAverage(oiChangeData, Math.max(2, smaPeriod), "delta_pcr", "sma_delta_pcr"),
+    [oiChangeData, smaPeriod]
+  );
   const rangeAnchorPcrData = useMemo(() => {
     if (chartData.length === 0) {
       return [];
@@ -304,6 +320,10 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
       };
     });
   }, [chartData]);
+  const rangeAnchorPcrChartData = useMemo(
+    () => addSimpleMovingAverage(rangeAnchorPcrData, Math.max(2, smaPeriod), "range_delta_pcr", "sma_range_delta_pcr"),
+    [rangeAnchorPcrData, smaPeriod]
+  );
   const stepDeltaPcrAxisMax = useMemo(() => computeDeltaPcrAxisMax(oiChangeData.map((point) => point.delta_pcr)), [oiChangeData]);
   const rangeDeltaPcrAxisMax = useMemo(
     () => computeDeltaPcrAxisMax(rangeAnchorPcrData.map((point) => point.range_delta_pcr)),
@@ -459,6 +479,41 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
             {scopedBusy ? <p className="text-sm text-slate-400">Loading scoped history...</p> : null}
           </div>
         ) : null}
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={showSma}
+              onChange={(event) => setShowSma(event.target.checked)}
+              className="h-4 w-4 rounded border border-white/10 bg-slate-950 accent-[#ffd166]"
+            />
+            Show SMA
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-300">
+            SMA points
+            <input
+              type="number"
+              min={2}
+              max={50}
+              step={1}
+              value={smaPeriod}
+              onChange={(event) => setSmaPeriod(clampStoredNumber(Number(event.target.value), 5, 2, 50))}
+              className="w-24 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-right text-white outline-none"
+            />
+          </label>
+          <div className="flex items-center gap-4 text-xs text-slate-400">
+            <span className="inline-flex items-center gap-2">
+              <span className="h-0.5 w-5 rounded bg-[#00d4aa]" />
+              PCR
+            </span>
+            {showSma ? (
+              <span className="inline-flex items-center gap-2">
+                <span className="h-0.5 w-5 rounded bg-[#ffd166]" />
+                {`SMA(${smaPeriod})`}
+              </span>
+            ) : null}
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="space-y-8">
         {activeError ? (
@@ -469,7 +524,7 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
           <>
             <div className="h-[320px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
+                <LineChart data={pcrChartData}>
                   <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
                   <XAxis
                     dataKey="timestamp"
@@ -480,9 +535,15 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
                   <Tooltip
                     contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
                     labelFormatter={(value) => formatFullDateTime(value)}
-                    formatter={(value: number) => [formatFixed(value, 4), "PCR"]}
+                    formatter={(value: number, name: string) => [
+                      formatFixed(value, 4),
+                      name === "sma" ? `SMA(${smaPeriod})` : "PCR"
+                    ]}
                   />
                   <Line type="monotone" dataKey="pcr" stroke="#00d4aa" strokeWidth={3} dot={{ fill: "#00d4aa" }} />
+                  {showSma ? (
+                    <Line type="monotone" dataKey="sma" stroke="#ffd166" strokeWidth={2} dot={false} connectNulls />
+                  ) : null}
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -519,7 +580,7 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
               </div>
               <div className="h-[260px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={oiChangeData}>
+                  <LineChart data={oiChangeChartData}>
                     <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
                     <XAxis
                       dataKey="timestamp"
@@ -530,10 +591,16 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
                     <Tooltip
                       contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
                       labelFormatter={(value) => formatFullDateTime(value)}
-                      formatter={(value) => [formatFixed(value, 4), "Delta PCR"]}
+                      formatter={(value, name: string) => [
+                        formatFixed(value, 4),
+                        name === "sma_delta_pcr" ? `Delta PCR SMA(${smaPeriod})` : "Delta PCR"
+                      ]}
                     />
                     <ReferenceLine y={0} stroke="rgba(255,255,255,0.18)" />
                     <Line type="monotone" dataKey="delta_pcr" stroke="#ffd166" strokeWidth={3} dot={{ fill: "#ffd166" }} connectNulls={false} />
+                    {showSma ? (
+                      <Line type="monotone" dataKey="sma_delta_pcr" stroke="#8ecae6" strokeWidth={2} dot={false} connectNulls />
+                    ) : null}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -545,7 +612,7 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
               </div>
               <div className="h-[260px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={rangeAnchorPcrData}>
+                  <LineChart data={rangeAnchorPcrChartData}>
                     <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
                     <XAxis
                       dataKey="timestamp"
@@ -556,10 +623,16 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
                     <Tooltip
                       contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
                       labelFormatter={(value) => formatFullDateTime(value)}
-                      formatter={(value) => [formatFixed(value, 4), "Range-Start Delta PCR"]}
+                      formatter={(value, name: string) => [
+                        formatFixed(value, 4),
+                        name === "sma_range_delta_pcr" ? `Range-Start Delta PCR SMA(${smaPeriod})` : "Range-Start Delta PCR"
+                      ]}
                     />
                     <ReferenceLine y={0} stroke="rgba(255,255,255,0.18)" />
                     <Line type="monotone" dataKey="range_delta_pcr" stroke="#7ae582" strokeWidth={3} dot={{ fill: "#7ae582" }} />
+                    {showSma ? (
+                      <Line type="monotone" dataKey="sma_range_delta_pcr" stroke="#f4a261" strokeWidth={2} dot={false} connectNulls />
+                    ) : null}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -875,6 +948,8 @@ function heatColor(value: number, maxValue: number, kind: "call" | "put" | "rati
 type StoredPreferences = {
   strikeMode: StrikeMode;
   timeMode: TimeMode;
+  showSma: boolean;
+  smaPeriod: number;
   atmWidth: number;
   customAtm: string;
   customAtmWidth: number;
@@ -890,6 +965,8 @@ function defaultPreferences(): StoredPreferences {
   return {
     strikeMode: "full",
     timeMode: "all",
+    showSma: true,
+    smaPeriod: 5,
     atmWidth: 500,
     customAtm: "",
     customAtmWidth: 500,
@@ -922,6 +999,8 @@ function readStoredPreferences(scope: string): StoredPreferences {
     return {
       strikeMode: isStrikeMode(scoped.strikeMode) ? scoped.strikeMode : "full",
       timeMode: isTimeMode(scoped.timeMode) ? scoped.timeMode : "all",
+      showSma: typeof scoped.showSma === "boolean" ? scoped.showSma : true,
+      smaPeriod: clampStoredNumber(asStoredNumber(scoped.smaPeriod, 5), 5, 2, 50),
       atmWidth: asStoredNumber(scoped.atmWidth, 500),
       customAtm: typeof scoped.customAtm === "string" ? scoped.customAtm : "",
       customAtmWidth: asStoredNumber(scoped.customAtmWidth, 500),
@@ -969,4 +1048,38 @@ function isTimeMode(value: unknown): value is TimeMode {
 
 function asStoredNumber(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function clampStoredNumber(value: number, fallback: number, min: number, max: number) {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function addSimpleMovingAverage<T extends Record<string, unknown>>(
+  rows: T[],
+  period: number,
+  sourceKey: keyof T = "pcr",
+  targetKey = "sma"
+) {
+  if (rows.length === 0) {
+    return [];
+  }
+
+  return rows.map((row, index) => {
+    if (index + 1 < period) {
+      return { ...row, [targetKey]: null };
+    }
+
+    let sum = 0;
+    for (let cursor = index - period + 1; cursor <= index; cursor += 1) {
+      sum += Number(rows[cursor]?.[sourceKey] ?? 0);
+    }
+
+    return {
+      ...row,
+      [targetKey]: roundToFour(sum / period)
+    };
+  });
 }

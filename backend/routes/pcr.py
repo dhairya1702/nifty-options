@@ -169,6 +169,37 @@ def _filter_snapshot_rows_to_scope(
     return [row for row in rows if strike_min <= float(row["strike_price"]) <= strike_max]
 
 
+def _empty_subgroup_response(
+    *,
+    strike_mode: str,
+    time_mode: str,
+    reference_strike: float | None,
+    atm_strike: float | None,
+    custom_atm: float | None,
+    spot_ltp: float | None,
+    strike_min: float | None,
+    strike_max: float | None,
+    bucket_size: int,
+    baseline_timestamp: str | None,
+    latest_timestamp: str | None,
+) -> dict:
+    return {
+        "underlying": option_scheduler.underlying,
+        "strike_mode": strike_mode,
+        "time_mode": time_mode,
+        "reference_strike": reference_strike,
+        "atm_strike": atm_strike,
+        "custom_atm": custom_atm,
+        "spot_ltp": spot_ltp,
+        "strike_min": strike_min,
+        "strike_max": strike_max,
+        "bucket_size": bucket_size,
+        "baseline_timestamp": baseline_timestamp,
+        "latest_timestamp": latest_timestamp,
+        "rows": [],
+    }
+
+
 @router.get("/history/range")
 def get_pcr_history_range(
     limit: int = Query(50, ge=1, le=500),
@@ -351,7 +382,19 @@ def get_pcr_subgroups_scoped(
         to_timestamp=effective_to,
     )
     if not timestamps:
-        raise HTTPException(status_code=404, detail="No option snapshot data found for the selected time window")
+        return _empty_subgroup_response(
+            strike_mode=normalized_strike_mode,
+            time_mode=normalized_time_mode,
+            reference_strike=reference_strike,
+            atm_strike=atm_strike,
+            custom_atm=effective_anchor,
+            spot_ltp=spot,
+            strike_min=effective_min,
+            strike_max=effective_max,
+            bucket_size=bucket_size,
+            baseline_timestamp=None,
+            latest_timestamp=None,
+        )
 
     baseline_timestamp = timestamps[0]
     latest_timestamp = timestamps[-1]
@@ -359,7 +402,19 @@ def get_pcr_subgroups_scoped(
     current_rows = _filter_snapshot_rows_to_scope(snapshot_rows(option_scheduler.underlying, latest_timestamp), effective_min, effective_max)
     all_rows = baseline_rows + current_rows
     if not all_rows:
-        raise HTTPException(status_code=404, detail="No option snapshot data found for the selected strike scope")
+        return _empty_subgroup_response(
+            strike_mode=normalized_strike_mode,
+            time_mode=normalized_time_mode,
+            reference_strike=reference_strike,
+            atm_strike=atm_strike,
+            custom_atm=effective_anchor,
+            spot_ltp=spot,
+            strike_min=effective_min,
+            strike_max=effective_max,
+            bucket_size=bucket_size,
+            baseline_timestamp=baseline_timestamp,
+            latest_timestamp=latest_timestamp,
+        )
 
     bucket_start = effective_min if effective_min is not None else min(float(row["strike_price"]) for row in all_rows)
 

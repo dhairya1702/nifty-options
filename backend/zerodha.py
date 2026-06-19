@@ -7,7 +7,7 @@ from math import erf, log, sqrt
 from typing import Any
 
 from kiteconnect import KiteConnect
-from kiteconnect.exceptions import TokenException
+from kiteconnect.exceptions import NetworkException, TokenException
 
 from config import get_env_value, require_settings
 from runtime_settings import clear_access_token, get_access_token
@@ -16,6 +16,9 @@ from runtime_settings import clear_access_token, get_access_token
 logger = logging.getLogger(__name__)
 NFO_EXCHANGE = "NFO"
 NSE_EXCHANGE = "NSE"
+NFO_INSTRUMENTS_CACHE_TTL = timedelta(minutes=30)
+NFO_INSTRUMENTS_FAILURE_COOLDOWN = timedelta(minutes=5)
+LIVE_CONTRACTS_CACHE_TTL = timedelta(minutes=2)
 SUPPORTED_UNDERLYINGS = {
     "NIFTY": {"instrument_name": "NIFTY", "spot_symbol": "NSE:NIFTY 50"},
     "BANKNIFTY": {"instrument_name": "BANKNIFTY", "spot_symbol": "NSE:NIFTY BANK"},
@@ -23,6 +26,12 @@ SUPPORTED_UNDERLYINGS = {
 }
 LOT_SIZES = {"NIFTY": 75, "BANKNIFTY": 30}
 _QUOTE_OI_CACHE: dict[str, float] = {}
+_NFO_INSTRUMENTS_CACHE: list[dict[str, Any]] = []
+_NFO_INSTRUMENTS_CACHE_FETCHED_AT: datetime | None = None
+_NFO_INSTRUMENTS_LAST_FAILURE_AT: datetime | None = None
+_NFO_INSTRUMENTS_LAST_FAILURE_REASON: str | None = None
+_LIVE_CONTRACTS_CACHE: list[dict[str, Any]] = []
+_LIVE_CONTRACTS_CACHE_FETCHED_AT: datetime | None = None
 
 
 class ZerodhaClientError(Exception):
@@ -68,16 +77,7 @@ def _nearest_expiry(instruments: list[dict[str, Any]], underlying: str) -> date:
 def _get_option_instruments(underlying: str) -> list[dict[str, Any]]:
     underlying = _validate_underlying(underlying)
     _require_access_token()
-    kite = get_kite_client()
-
-    try:
-        instruments = kite.instruments(NFO_EXCHANGE)
-    except TokenException as exc:
-        _handle_token_exception(exc)
-        raise ZerodhaClientError("Zerodha session expired. Complete login again.") from exc
-    except Exception as exc:
-        logger.exception("Failed to fetch NFO instruments from Zerodha")
-        raise ZerodhaClientError(f"Failed to fetch NFO instruments: {exc}") from exc
+    instruments = _get_nfo_instruments()
 
     return [
         instrument
@@ -85,6 +85,55 @@ def _get_option_instruments(underlying: str) -> list[dict[str, Any]]:
         if instrument.get("name") == SUPPORTED_UNDERLYINGS[underlying]["instrument_name"]
         and instrument.get("instrument_type") in {"CE", "PE"}
     ]
+
+
+def _get_nfo_instruments() -> list[dict[str, Any]]:
+    global _NFO_INSTRUMENTS_CACHE_FETCHED_AT, _NFO_INSTRUMENTS_LAST_FAILURE_AT, _NFO_INSTRUMENTS_LAST_FAILURE_REASON
+
+    now = datetime.now()
+    if _NFO_INSTRUMENTS_CACHE and _NFO_INSTRUMENTS_CACHE_FETCHED_AT:
+        if now - _NFO_INSTRUMENTS_CACHE_FETCHED_AT < NFO_INSTRUMENTS_CACHE_TTL:
+            return _NFO_INSTRUMENTS_CACHE
+    if _NFO_INSTRUMENTS_LAST_FAILURE_AT and _NFO_INSTRUMENTS_LAST_FAILURE_REASON:
+        if now - _NFO_INSTRUMENTS_LAST_FAILURE_AT < NFO_INSTRUMENTS_FAILURE_COOLDOWN:
+            if _NFO_INSTRUMENTS_CACHE:
+                logger.warning("Using stale cached NFO instruments during cooldown after failure: %s", _NFO_INSTRUMENTS_LAST_FAILURE_REASON)
+                return _NFO_INSTRUMENTS_CACHE
+            raise ZerodhaClientError(
+                "Zerodha rate limit is active for NFO instruments. Wait a few minutes before retrying live option data."
+            )
+
+    kite = get_kite_client()
+
+    try:
+        instruments = kite.instruments(NFO_EXCHANGE)
+        _NFO_INSTRUMENTS_CACHE.clear()
+        _NFO_INSTRUMENTS_CACHE.extend(instruments)
+        _NFO_INSTRUMENTS_CACHE_FETCHED_AT = now
+        _NFO_INSTRUMENTS_LAST_FAILURE_AT = None
+        _NFO_INSTRUMENTS_LAST_FAILURE_REASON = None
+        return _NFO_INSTRUMENTS_CACHE
+    except TokenException as exc:
+        _handle_token_exception(exc)
+        raise ZerodhaClientError("Zerodha session expired. Complete login again.") from exc
+    except NetworkException as exc:
+        _NFO_INSTRUMENTS_LAST_FAILURE_AT = now
+        _NFO_INSTRUMENTS_LAST_FAILURE_REASON = str(exc)
+        if _NFO_INSTRUMENTS_CACHE:
+            logger.warning("Using stale cached NFO instruments after network failure: %s", exc)
+            return _NFO_INSTRUMENTS_CACHE
+        logger.exception("Failed to fetch NFO instruments from Zerodha")
+        raise ZerodhaClientError(
+            "Zerodha rate limit is active for NFO instruments. Wait a few minutes before retrying live option data."
+        ) from exc
+    except Exception as exc:
+        _NFO_INSTRUMENTS_LAST_FAILURE_AT = now
+        _NFO_INSTRUMENTS_LAST_FAILURE_REASON = str(exc)
+        if _NFO_INSTRUMENTS_CACHE:
+            logger.warning("Using stale cached NFO instruments after fetch failure: %s", exc)
+            return _NFO_INSTRUMENTS_CACHE
+        logger.exception("Failed to fetch NFO instruments from Zerodha")
+        raise ZerodhaClientError(f"Failed to fetch NFO instruments: {exc}") from exc
 
 
 def _require_access_token() -> str:
@@ -221,21 +270,29 @@ def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
     return candidate
 
 
-def _nearest_target_expiry(expiries: list[date], target_weekday: int) -> date:
+def _future_expiries(expiries: list[date]) -> list[date]:
     today = date.today()
-    candidates = [expiry for expiry in expiries if expiry >= today and expiry.weekday() == target_weekday]
-    if not candidates:
+    return sorted(expiry for expiry in expiries if expiry >= today)
+
+
+def _monthly_target_expiry(expiries: list[date]) -> date:
+    future_expiries = _future_expiries(expiries)
+    if not future_expiries:
+        raise ZerodhaClientError("No future monthly expiry found")
+
+    first_expiry = future_expiries[0]
+    same_month = [expiry for expiry in future_expiries if expiry.year == first_expiry.year and expiry.month == first_expiry.month]
+    return same_month[-1]
+
+
+def _nearest_weekly_expiry(expiries: list[date]) -> date:
+    future_expiries = _future_expiries(expiries)
+    if not future_expiries:
         raise ZerodhaClientError("No future weekly expiry found")
-    return min(candidates)
 
-
-def _monthly_target_expiry(expiries: list[date], target_weekday: int) -> date:
-    today = date.today()
-    future_expiries = sorted(expiry for expiry in expiries if expiry >= today and expiry.weekday() == target_weekday)
-    for expiry in future_expiries:
-        if expiry == _last_weekday_of_month(expiry.year, expiry.month, target_weekday):
-            return expiry
-    raise ZerodhaClientError("No future monthly expiry found")
+    monthly_expiry = _monthly_target_expiry(expiries)
+    weekly_candidates = [expiry for expiry in future_expiries if expiry != monthly_expiry]
+    return weekly_candidates[0] if weekly_candidates else future_expiries[0]
 
 
 def _normal_cdf(value: float) -> float:
@@ -394,53 +451,63 @@ def _contract_row(
 
 
 def get_live_option_contracts() -> list[dict[str, Any]]:
+    global _LIVE_CONTRACTS_CACHE_FETCHED_AT
+
+    now = datetime.now()
+    if _LIVE_CONTRACTS_CACHE and _LIVE_CONTRACTS_CACHE_FETCHED_AT:
+        if now - _LIVE_CONTRACTS_CACHE_FETCHED_AT < LIVE_CONTRACTS_CACHE_TTL:
+            return _LIVE_CONTRACTS_CACHE
+
     kite = get_kite_client()
     _require_access_token()
 
-    nifty_instruments = _get_option_instruments("NIFTY")
-    banknifty_instruments = _get_option_instruments("BANKNIFTY")
-    nifty_expiries = sorted({instrument["expiry"] for instrument in nifty_instruments if instrument.get("expiry")})
-    banknifty_expiries = sorted({instrument["expiry"] for instrument in banknifty_instruments if instrument.get("expiry")})
-
-    contract_specs = [
-        {
-            "id": "nifty-weekly",
-            "label": "NIFTY Weekly",
-            "underlying": "NIFTY",
-            "expiry_type": "weekly",
-            "expiry": _nearest_target_expiry(nifty_expiries, 3),
-            "lot_size": LOT_SIZES["NIFTY"],
-            "instruments": nifty_instruments,
-        },
-        {
-            "id": "nifty-monthly",
-            "label": "NIFTY Monthly",
-            "underlying": "NIFTY",
-            "expiry_type": "monthly",
-            "expiry": _monthly_target_expiry(nifty_expiries, 3),
-            "lot_size": LOT_SIZES["NIFTY"],
-            "instruments": nifty_instruments,
-        },
-        {
-            "id": "banknifty-monthly",
-            "label": "BANKNIFTY Monthly",
-            "underlying": "BANKNIFTY",
-            "expiry_type": "monthly",
-            "expiry": _monthly_target_expiry(banknifty_expiries, 2),
-            "lot_size": LOT_SIZES["BANKNIFTY"],
-            "instruments": banknifty_instruments,
-        },
-    ]
-
-    spot_symbols = sorted({SUPPORTED_UNDERLYINGS[spec["underlying"]]["spot_symbol"] for spec in contract_specs})
     try:
+        nifty_instruments = _get_option_instruments("NIFTY")
+        banknifty_instruments = _get_option_instruments("BANKNIFTY")
+        nifty_expiries = sorted({instrument["expiry"] for instrument in nifty_instruments if instrument.get("expiry")})
+        banknifty_expiries = sorted({instrument["expiry"] for instrument in banknifty_instruments if instrument.get("expiry")})
+
+        contract_specs = [
+            {
+                "id": "nifty-weekly",
+                "label": "NIFTY Weekly",
+                "underlying": "NIFTY",
+                "expiry_type": "weekly",
+                "expiry": _nearest_weekly_expiry(nifty_expiries),
+                "lot_size": LOT_SIZES["NIFTY"],
+                "instruments": nifty_instruments,
+            },
+            {
+                "id": "nifty-monthly",
+                "label": "NIFTY Monthly",
+                "underlying": "NIFTY",
+                "expiry_type": "monthly",
+                "expiry": _monthly_target_expiry(nifty_expiries),
+                "lot_size": LOT_SIZES["NIFTY"],
+                "instruments": nifty_instruments,
+            },
+            {
+                "id": "banknifty-monthly",
+                "label": "BANKNIFTY Monthly",
+                "underlying": "BANKNIFTY",
+                "expiry_type": "monthly",
+                "expiry": _monthly_target_expiry(banknifty_expiries),
+                "lot_size": LOT_SIZES["BANKNIFTY"],
+                "instruments": banknifty_instruments,
+            },
+        ]
+
+        spot_symbols = sorted({SUPPORTED_UNDERLYINGS[spec["underlying"]]["spot_symbol"] for spec in contract_specs})
         spot_quotes = kite.quote(spot_symbols)
     except TokenException as exc:
         _handle_token_exception(exc)
         raise ZerodhaClientError("Zerodha session expired. Complete login again.") from exc
     except Exception as exc:
-        logger.exception("Failed to fetch spot quotes from Zerodha")
-        raise ZerodhaClientError(f"Failed to fetch spot quotes: {exc}") from exc
+        if _LIVE_CONTRACTS_CACHE:
+            logger.warning("Using stale cached live contracts after fetch failure: %s", exc)
+            return _LIVE_CONTRACTS_CACHE
+        logger.exception("Failed to build live option contracts from Zerodha")
+        raise ZerodhaClientError(f"Failed to build live option contracts: {exc}") from exc
 
     contracts: list[dict[str, Any]] = []
     for spec in contract_specs:
@@ -519,4 +586,7 @@ def get_live_option_contracts() -> list[dict[str, Any]]:
             }
         )
 
+    _LIVE_CONTRACTS_CACHE.clear()
+    _LIVE_CONTRACTS_CACHE.extend(contracts)
+    _LIVE_CONTRACTS_CACHE_FETCHED_AT = now
     return contracts

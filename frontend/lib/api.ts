@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -300,6 +300,121 @@ export type LiveOptionChainResponse = {
   contracts: OptionChainContract[];
 };
 
+export type SimulatorBacktestTrade = {
+  entry_timestamp: string;
+  exit_timestamp: string;
+  trading_day: string;
+  side: "CE" | "PE";
+  strike_price: number;
+  quantity: number;
+  entry_price: number;
+  exit_price: number;
+  entry_fees: number;
+  exit_fees: number;
+  bars_held: number;
+  pnl: number;
+  pnl_pct: number;
+  entry_signal: string;
+  exit_reason: string;
+};
+
+export type SimulatorBacktestPoint = {
+  timestamp: string;
+  equity: number;
+  cash: number;
+};
+
+export type SimulatorBacktestSignal = {
+  timestamp: string;
+  trading_day: string;
+  action: "buy_ce" | "buy_pe" | "wait";
+  raw_action: "buy_ce" | "buy_pe" | "wait";
+  pcr: number;
+  pcr_sma: number | null;
+  reason: string;
+};
+
+export type SimulatorBacktestResponse = {
+  config: {
+    underlying: string;
+    capital: number;
+    limit: number;
+    sma_period: number;
+    profit_target_pct: number;
+    stop_loss_pct: number;
+    max_hold_bars: number;
+    lot_multiplier: number;
+    lot_size: number;
+    intraday_only: boolean;
+    entry_start_ist: string;
+    entry_cutoff_ist: string;
+    square_off_ist: string;
+    max_trades_per_day: number;
+    daily_profit_lock_pct: number;
+    daily_loss_limit_pct: number;
+    confirmation_bars: number;
+    cooldown_bars: number;
+    min_pcr_sma_gap: number;
+    min_oi_bias_ratio: number;
+    min_entry_price: number;
+  };
+  summary: {
+    trades: number;
+    wins: number;
+    losses: number;
+    win_rate: number;
+    realized_pnl: number;
+    ending_equity: number;
+    return_pct: number;
+    avg_win: number;
+    avg_loss: number;
+    max_drawdown_pct: number;
+    timestamps_tested: number;
+    profitable_days: number;
+    losing_days: number;
+    forced_day_end_exits: number;
+  };
+  trades: SimulatorBacktestTrade[];
+  equity_curve: SimulatorBacktestPoint[];
+  signals: SimulatorBacktestSignal[];
+  days: {
+    trading_day: string;
+    trades: number;
+    realized_pnl: number;
+    wins: number;
+    losses: number;
+    locked_reason: string | null;
+  }[];
+};
+
+export type SimulatorOptimizationResult = {
+  score: number;
+  config: {
+    sma_period: number;
+    profit_target_pct: number;
+    stop_loss_pct: number;
+    max_hold_bars: number;
+    lot_multiplier: number;
+    max_trades_per_day: number;
+    daily_profit_lock_pct: number;
+    daily_loss_limit_pct: number;
+    confirmation_bars: number;
+    cooldown_bars: number;
+    min_pcr_sma_gap: number;
+    min_oi_bias_ratio: number;
+    min_entry_price: number;
+  };
+  summary: SimulatorBacktestResponse["summary"];
+};
+
+export type SimulatorOptimizeResponse = {
+  underlying: string;
+  capital: number;
+  limit: number;
+  runs: number;
+  results: SimulatorOptimizationResult[];
+};
+
 export const fetchPCRCurrent = () => apiRequest<PCRCurrent>("/pcr/current");
 export const fetchPCRHistory = (limit = 50) => apiRequest<PCRHistoryPoint[]>(`/pcr/history?limit=${limit}`);
 export const fetchPCRScopedHistory = (params: {
@@ -407,6 +522,64 @@ export const fetchSlabAnalytics = () => apiRequest<SlabAnalytics>("/analytics/sl
 export const fetchProbabilityAnalytics = () => apiRequest<ProbabilityAnalytics>("/analytics/probability");
 export const fetchMarketStatus = () => apiRequest<MarketStatus>("/market/status");
 export const fetchLiveOptionChain = () => apiRequest<LiveOptionChainResponse>("/option-chain/live");
+export const fetchSimulatorBacktest = (params: {
+  underlying: string;
+  capital: number;
+  limit: number;
+  smaPeriod: number;
+  profitTargetPct: number;
+  stopLossPct: number;
+  maxHoldBars: number;
+  lotMultiplier: number;
+  maxTradesPerDay: number;
+  dailyProfitLockPct: number;
+  dailyLossLimitPct: number;
+  confirmationBars: number;
+  cooldownBars: number;
+  minPcrSmaGap: number;
+  minOiBiasRatio: number;
+  minEntryPrice: number;
+}) => {
+  const search = new URLSearchParams({
+    underlying: params.underlying,
+    capital: String(params.capital),
+    limit: String(params.limit),
+    sma_period: String(params.smaPeriod),
+    profit_target_pct: String(params.profitTargetPct),
+    stop_loss_pct: String(params.stopLossPct),
+    max_hold_bars: String(params.maxHoldBars),
+    lot_multiplier: String(params.lotMultiplier),
+    max_trades_per_day: String(params.maxTradesPerDay),
+    daily_profit_lock_pct: String(params.dailyProfitLockPct),
+    daily_loss_limit_pct: String(params.dailyLossLimitPct),
+    confirmation_bars: String(params.confirmationBars),
+    cooldown_bars: String(params.cooldownBars),
+    min_pcr_sma_gap: String(params.minPcrSmaGap),
+    min_oi_bias_ratio: String(params.minOiBiasRatio),
+    min_entry_price: String(params.minEntryPrice)
+  });
+  return apiRequest<SimulatorBacktestResponse>(`/simulator/backtest?${search.toString()}`);
+};
+export const fetchSimulatorOptimize = (params: {
+  underlying: string;
+  capital: number;
+  limit: number;
+  lotMultiplier: number;
+  maxTradesPerDay: number;
+  dailyProfitLockPct: number;
+  dailyLossLimitPct: number;
+}) => {
+  const search = new URLSearchParams({
+    underlying: params.underlying,
+    capital: String(params.capital),
+    limit: String(params.limit),
+    lot_multiplier: String(params.lotMultiplier),
+    max_trades_per_day: String(params.maxTradesPerDay),
+    daily_profit_lock_pct: String(params.dailyProfitLockPct),
+    daily_loss_limit_pct: String(params.dailyLossLimitPct)
+  });
+  return apiRequest<SimulatorOptimizeResponse>(`/simulator/optimize?${search.toString()}`);
+};
 export const startScheduler = () => apiRequest<SchedulerStatus>("/scheduler/start", { method: "POST" });
 export const stopScheduler = () => apiRequest<SchedulerStatus>("/scheduler/stop", { method: "POST" });
 export const updateSchedulerConfig = (interval_minutes: number, underlying: string) =>

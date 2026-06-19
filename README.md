@@ -32,7 +32,7 @@ Set `LOCAL_DB_PATH` in `backend/.env` only if you want the database somewhere el
 cd backend
 pip install -r requirements.txt
 cp .env.example .env
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --host 127.0.0.1 --port 8001
 ```
 
 Fill `backend/.env` with:
@@ -47,7 +47,7 @@ LOCAL_DB_PATH=
 
 ## Zerodha Login
 
-1. Visit `http://localhost:8000/login`
+1. Visit `http://127.0.0.1:8001/login`
 2. Complete the Zerodha login flow
 3. Zerodha redirects to `/callback`
 4. The backend exchanges the `request_token` for an access token and overwrites `ZERODHA_ACCESS_TOKEN` in `backend/.env`
@@ -73,7 +73,7 @@ npm run dev
 Fill `frontend/.env.local` with:
 
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8001
 ```
 
 ## Render Deployment

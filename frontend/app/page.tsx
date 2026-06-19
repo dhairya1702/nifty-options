@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  API_BASE,
   fetchAnalyticsOverview,
   fetchAuthStatus,
   fetchLevels,
@@ -44,7 +45,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 type DashboardErrors = Partial<
-  Record<"live" | "scheduler" | "overview" | "pcr" | "history" | "slabs" | "probability" | "levels", string>
+  Record<"auth" | "live" | "scheduler" | "overview" | "pcr" | "history" | "slabs" | "probability" | "levels", string>
 >;
 
 export default function DashboardPage() {
@@ -95,6 +96,9 @@ export default function DashboardPage() {
 
       if (authResult.status === "fulfilled") {
         setAuthStatus(authResult.value);
+      } else {
+        setAuthStatus(null);
+        nextErrors.auth = authResult.reason instanceof Error ? authResult.reason.message : "Failed to load auth status";
       }
 
       if (marketResult.status === "fulfilled") {
@@ -239,6 +243,15 @@ export default function DashboardPage() {
     }
     return pcrHistory[pcrHistory.length - 1].pcr - pcrHistory[pcrHistory.length - 2].pcr;
   }, [pcrHistory]);
+
+  const loginUrl = getLoginUrl();
+  const authMessage = errors.auth
+    ? `Cannot verify Zerodha login from ${API_BASE}. If your backend is on port 8001, update frontend/.env.local and restart Next.js.`
+    : authStatus?.login_required || (authStatus && !authStatus.authenticated)
+      ? "Zerodha session missing or expired. Log in again to restore live data and scheduler fetches."
+      : null;
+  const authActionLabel = authMessage ? "Zerodha Login" : null;
+
   async function handleSchedulerAction(action: "start" | "stop" | "update") {
     setBusy(true);
     try {
@@ -265,11 +278,22 @@ export default function DashboardPage() {
       <div className="mx-auto flex max-w-[1800px] flex-col gap-6">
         <Header
           lastUpdatedLabel={liveData?.fetched_at ? formatDateTime(liveData.fetched_at) : "Waiting for live data"}
+          authMessage={authMessage}
+          authActionLabel={authActionLabel}
+          authActionUrl={authMessage ? loginUrl : null}
           underlying="NIFTY / BANKNIFTY"
         />
 
-        {authStatus && !authStatus.authenticated ? <LoginCard loginUrl={getLoginUrl()} /> : null}
-        {authStatus?.authenticated && authStatus.login_required ? <AuthStatusCard loginUrl={getLoginUrl()} /> : null}
+        {authStatus && !authStatus.authenticated ? <LoginCard loginUrl={loginUrl} /> : null}
+        {authStatus?.authenticated && authStatus.login_required ? <AuthStatusCard loginUrl={loginUrl} /> : null}
+
+        {errors.auth ? (
+          <Card className="border-amber-500/20 bg-amber-500/10">
+            <CardContent className="p-4 text-sm text-amber-100">
+              {errors.auth}. Frontend API base is <span className="font-mono">{API_BASE}</span>.
+            </CardContent>
+          </Card>
+        ) : null}
 
         <Card className="border-white/10 bg-slate-950/70">
           <CardContent className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">

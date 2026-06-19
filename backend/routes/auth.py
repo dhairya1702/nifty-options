@@ -58,6 +58,7 @@ def callback(
         session = kite.generate_session(request_token, api_secret=settings["ZERODHA_API_SECRET"])
         access_token = session["access_token"]
         set_access_token(access_token)
+        option_scheduler.catch_up_history()
 
         wants_json = format == "json" or "application/json" in request.headers.get("accept", "")
         if wants_json:

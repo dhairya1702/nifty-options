@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_frontend_url
 from local_db import init_db
-from routes import analytics, auth, levels, market, oi, option_chain, pcr, scheduler, sentiment
+from routes import analytics, auth, levels, market, oi, option_chain, pcr, scheduler, sentiment, simulator
 from scheduler import option_scheduler
 
 
@@ -64,3 +64,4 @@ app.include_router(levels.router)
 app.include_router(sentiment.router)
 app.include_router(analytics.router)
 app.include_router(market.router)
+app.include_router(simulator.router)

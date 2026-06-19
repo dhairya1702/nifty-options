@@ -185,13 +185,30 @@ class OptionDataScheduler:
             logger.exception("Failed to build scheduler data status")
             return None
 
-    def start(self, *, resume: bool = False) -> dict[str, Any]:
+    def catch_up_history(self) -> dict[str, Any]:
         from backfill import DEFAULT_LOOKBACK_DAYS, catch_up_missing_history
 
+        try:
+            self.last_catch_up = catch_up_missing_history(DEFAULT_LOOKBACK_DAYS)
+            return self.last_catch_up
+        except Exception as exc:
+            logger.exception("Scheduler catch-up failed")
+            self.last_catch_up = {
+                "underlying": self.underlying,
+                "lookback_days": DEFAULT_LOOKBACK_DAYS,
+                "snapshots_inserted": 0,
+                "pcr_points_inserted": 0,
+                "catch_up_performed": False,
+                "error": str(exc),
+            }
+            self.last_error = f"Catch-up failed: {exc}"
+            return self.last_catch_up
+
+    def start(self, *, resume: bool = False) -> dict[str, Any]:
         self.start_engine()
         self.last_error = None
         self.last_outcome = "starting"
-        self.last_catch_up = catch_up_missing_history(DEFAULT_LOOKBACK_DAYS)
+        self.catch_up_history()
         existing = self.scheduler.get_job(JOB_ID)
         if existing:
             self.scheduler.remove_job(JOB_ID)
