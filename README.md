@@ -81,8 +81,8 @@ NEXT_PUBLIC_API_URL=http://127.0.0.1:8001
 After `backend/.env` and `frontend/.env.local` are set up, you can start both services from the repo root with:
 
 ```bash
-chmod +x laucnh
-./laucnh
+chmod +x launch
+./launch
 ```
 
 The script:
