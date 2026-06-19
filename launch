@@ -8,6 +8,11 @@ FRONTEND_DIR="$ROOT_DIR/frontend"
 BACKEND_HOST="127.0.0.1"
 BACKEND_PORT="8001"
 FRONTEND_PORT="3000"
+BACKEND_ENV="$BACKEND_DIR/.env"
+BACKEND_ENV_EXAMPLE="$BACKEND_DIR/.env.example"
+FRONTEND_ENV="$FRONTEND_DIR/.env.local"
+FRONTEND_ENV_EXAMPLE="$FRONTEND_DIR/.env.local.example"
+DEFAULT_DB_PATH="$BACKEND_DIR/data/options_dashboard.sqlite3"
 
 backend_pid=""
 frontend_pid=""
@@ -24,21 +29,68 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-require_file() {
-  local file_path="$1"
-  local help_text="$2"
+copy_if_missing() {
+  local target_path="$1"
+  local example_path="$2"
 
-  if [[ ! -f "$file_path" ]]; then
-    echo "Missing required file: $file_path"
-    echo "$help_text"
+  if [[ -f "$target_path" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$example_path" ]]; then
+    echo "Missing required template: $example_path"
     exit 1
   fi
+
+  cp "$example_path" "$target_path"
+  echo "Created $target_path from $(basename "$example_path")"
+}
+
+db_path_from_env() {
+  local configured_path
+  configured_path="$(sed -n 's/^LOCAL_DB_PATH=//p' "$BACKEND_ENV" | tail -n 1)"
+
+  if [[ -n "$configured_path" ]]; then
+    echo "${configured_path/#\~/$HOME}"
+  else
+    echo "$DEFAULT_DB_PATH"
+  fi
+}
+
+warn_if_backend_env_incomplete() {
+  local missing=()
+
+  for key in ZERODHA_API_KEY ZERODHA_API_SECRET; do
+    if ! grep -q "^${key}=.\+" "$BACKEND_ENV"; then
+      missing+=("$key")
+    fi
+  done
+
+  if (( ${#missing[@]} > 0 )); then
+    echo "Backend .env still needs values: ${missing[*]}"
+    echo "The app can start, but Zerodha login and live market fetches will not work until those are set."
+  fi
+}
+
+describe_db_state() {
+  local db_path="$1"
+
+  if [[ -f "$db_path" ]]; then
+    echo "Using SQLite DB at $db_path"
+    return
+  fi
+
+  echo "No SQLite DB found at $db_path"
+  echo "The backend will create a fresh schema automatically on startup."
+  echo "If you want existing history and saved runtime settings, copy backend/data/options_dashboard.sqlite3 from the old laptop first."
 }
 
 echo "Starting Options Dashboard from $ROOT_DIR"
 
-require_file "$BACKEND_DIR/.env" "Create it from backend/.env.example and add your Zerodha values."
-require_file "$FRONTEND_DIR/.env.local" "Create it from frontend/.env.local.example."
+copy_if_missing "$BACKEND_ENV" "$BACKEND_ENV_EXAMPLE"
+copy_if_missing "$FRONTEND_ENV" "$FRONTEND_ENV_EXAMPLE"
+warn_if_backend_env_incomplete
+describe_db_state "$(db_path_from_env)"
 
 if [[ ! -d "$BACKEND_DIR/.venv" ]]; then
   echo "Creating backend virtual environment..."

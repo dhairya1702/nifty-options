@@ -87,13 +87,21 @@ chmod +x launch
 
 The script:
 
+- creates `backend/.env` and `frontend/.env.local` from their example files if missing
 - creates `backend/.venv` if missing
 - installs backend requirements
 - installs frontend packages if `node_modules` is missing
+- tells you whether it found an existing SQLite database or whether it will create a fresh one
 - starts the backend on `http://127.0.0.1:8001`
 - starts the frontend on `http://localhost:3000`
 
 Press `Ctrl+C` to stop both services together.
+
+For a seamless transfer from another laptop, also copy:
+
+- `backend/.env`
+- `frontend/.env.local`
+- `backend/data/options_dashboard.sqlite3`
 
 ## Render Deployment
 
