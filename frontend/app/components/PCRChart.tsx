@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ResponsiveContainer, LineChart, Line, CartesianGrid, Tooltip, XAxis, YAxis, AreaChart, Area, ReferenceLine } from "recharts";
+import { ResponsiveContainer, LineChart, Line, CartesianGrid, Tooltip, XAxis, YAxis, ReferenceLine } from "recharts";
 
 import {
   fetchPCRScopedHistory,
@@ -265,32 +265,6 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
     const maxDeltaPcr = Math.max(1, ...rows.map((row) => clipDeltaPcr(row.delta_pcr)));
     return { maxAbsDeltaCall, maxAbsDeltaPut, maxDeltaPcr };
   }, [subgroupData]);
-  const oiChangeData = useMemo(
-    () =>
-      chartData.map((point, index) => {
-        const previous = chartData[index - 1];
-        const totalCallOi = "total_call_oi" in point ? Number(point.total_call_oi ?? 0) : 0;
-        const totalPutOi = "total_put_oi" in point ? Number(point.total_put_oi ?? 0) : 0;
-        const previousCallOi = previous && "total_call_oi" in previous ? Number(previous.total_call_oi ?? 0) : 0;
-        const previousPutOi = previous && "total_put_oi" in previous ? Number(previous.total_put_oi ?? 0) : 0;
-        const deltaCallOi = index === 0 ? 0 : roundToTwo(totalCallOi - previousCallOi);
-        const deltaPutOi = index === 0 ? 0 : roundToTwo(totalPutOi - previousPutOi);
-        const adjustedCallOi = deltaCallOi <= 0 ? 1 : deltaCallOi;
-        const adjustedPutOi = deltaPutOi < 0 ? 1 : deltaPutOi;
-
-        return {
-          timestamp: point.timestamp,
-          delta_call_oi: deltaCallOi,
-          delta_put_oi: deltaPutOi,
-          delta_pcr: index === 0 ? 0 : clipDeltaPcr(roundToFour(Math.abs(adjustedPutOi / adjustedCallOi)))
-        };
-      }),
-    [chartData]
-  );
-  const oiChangeChartData = useMemo(
-    () => addSimpleMovingAverage(oiChangeData, Math.max(2, smaPeriod), "delta_pcr", "sma_delta_pcr"),
-    [oiChangeData, smaPeriod]
-  );
   const rangeAnchorPcrData = useMemo(() => {
     if (chartData.length === 0) {
       return [];
@@ -324,7 +298,6 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
     () => addSimpleMovingAverage(rangeAnchorPcrData, Math.max(2, smaPeriod), "range_delta_pcr", "sma_range_delta_pcr"),
     [rangeAnchorPcrData, smaPeriod]
   );
-  const stepDeltaPcrAxisMax = useMemo(() => computeDeltaPcrAxisMax(oiChangeData.map((point) => point.delta_pcr)), [oiChangeData]);
   const rangeDeltaPcrAxisMax = useMemo(
     () => computeDeltaPcrAxisMax(rangeAnchorPcrData.map((point) => point.range_delta_pcr)),
     [rangeAnchorPcrData]
@@ -549,64 +522,6 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
             </div>
             <div>
               <div className="mb-3">
-                <p className="text-sm font-semibold text-white">OI Change Over Time</p>
-                <p className="text-xs text-slate-400">Same strike and time scope as the PCR chart above.</p>
-              </div>
-              <div className="h-[280px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={oiChangeData}>
-                    <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                    <XAxis
-                      dataKey="timestamp"
-                      tickFormatter={(value) => formatChartTime(value)}
-                      stroke="#7c879f"
-                    />
-                    <YAxis tickFormatter={(value) => formatCompact(value)} stroke="#7c879f" />
-                    <Tooltip
-                      contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
-                      labelFormatter={(value) => formatFullDateTime(value)}
-                      formatter={(value: number, name: string) => [formatCompact(value), name === "delta_call_oi" ? "Call OI Change" : "Put OI Change"]}
-                    />
-                    <Area type="monotone" dataKey="delta_call_oi" stroke="#ff5d73" fill="#ff5d73" fillOpacity={0.18} />
-                    <Area type="monotone" dataKey="delta_put_oi" stroke="#00d4aa" fill="#00d4aa" fillOpacity={0.16} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-            <div>
-              <div className="mb-3">
-                <p className="text-sm font-semibold text-white">PCR of OI Change</p>
-                <p className="text-xs text-slate-400">Calculated as change in put OI divided by change in call OI for each scoped timestamp step.</p>
-              </div>
-              <div className="h-[260px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={oiChangeChartData}>
-                    <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                    <XAxis
-                      dataKey="timestamp"
-                      tickFormatter={(value) => formatChartTime(value)}
-                      stroke="#7c879f"
-                    />
-                    <YAxis domain={[0, stepDeltaPcrAxisMax]} stroke="#7c879f" />
-                    <Tooltip
-                      contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
-                      labelFormatter={(value) => formatFullDateTime(value)}
-                      formatter={(value, name: string) => [
-                        formatFixed(value, 4),
-                        name === "sma_delta_pcr" ? `Delta PCR SMA(${smaPeriod})` : "Delta PCR"
-                      ]}
-                    />
-                    <ReferenceLine y={0} stroke="rgba(255,255,255,0.18)" />
-                    <Line type="monotone" dataKey="delta_pcr" stroke="#ffd166" strokeWidth={3} dot={{ fill: "#ffd166" }} connectNulls={false} />
-                    {showSma ? (
-                      <Line type="monotone" dataKey="sma_delta_pcr" stroke="#8ecae6" strokeWidth={2} dot={false} connectNulls />
-                    ) : null}
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-            <div>
-              <div className="mb-3">
                 <p className="text-sm font-semibold text-white">PCR of OI Change From Range Start</p>
                 <p className="text-xs text-slate-400">Each point compares scoped call and put OI back to the first timestamp in the selected range.</p>
               </div>
@@ -636,138 +551,6 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
                   </LineChart>
                 </ResponsiveContainer>
               </div>
-            </div>
-            <div>
-              <div className="mb-3">
-                <p className="text-sm font-semibold text-white">Range Baseline Breakdown</p>
-                <p className="text-xs text-slate-400">Real scoped values used for the cumulative delta PCR calculation.</p>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="min-w-[1200px] text-sm">
-                  <thead>
-                    <tr className="border-b border-white/10 text-left text-slate-400">
-                      <th className="px-3 py-3 font-medium">Time</th>
-                      <th className="px-3 py-3 font-medium">Call OI In Range</th>
-                      <th className="px-3 py-3 font-medium">Put OI In Range</th>
-                      <th className="px-3 py-3 font-medium">Delta Call Vs Start</th>
-                      <th className="px-3 py-3 font-medium">Delta Put Vs Start</th>
-                      <th className="px-3 py-3 font-medium">Adjusted Call</th>
-                      <th className="px-3 py-3 font-medium">Adjusted Put</th>
-                      <th className="px-3 py-3 font-medium">Delta PCR</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rangeAnchorPcrData.map((row) => (
-                      <tr key={`range-breakdown-${row.timestamp}`} className="border-b border-white/5">
-                        <td className="px-3 py-3 text-slate-100">{formatTableTime(row.timestamp)}</td>
-                        <td className="px-3 py-3 text-slate-200">{formatCompact(row.total_call_oi)}</td>
-                        <td className="px-3 py-3 text-slate-200">{formatCompact(row.total_put_oi)}</td>
-                        <td className={`px-3 py-3 ${row.range_call_change >= 0 ? "text-slate-200" : "text-rose-300"}`}>
-                          {formatSignedCompact(row.range_call_change)}
-                        </td>
-                        <td className={`px-3 py-3 ${row.range_put_change >= 0 ? "text-slate-200" : "text-rose-300"}`}>
-                          {formatSignedCompact(row.range_put_change)}
-                        </td>
-                        <td className="px-3 py-3 text-slate-200">{formatCompact(row.adjusted_call_oi)}</td>
-                        <td className="px-3 py-3 text-slate-200">{formatCompact(row.adjusted_put_oi)}</td>
-                        <td className="px-3 py-3 font-medium text-white">{formatFixed(row.range_delta_pcr, 4)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div>
-              <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-white">Fixed Subgroup Breakdown</p>
-                  <p className="text-xs text-slate-400">Bucketed view of the same selected strike and time scope.</p>
-                  {subgroupData ? (
-                    <p className="mt-1 text-xs text-slate-500">
-                      Baseline {formatShortDateTime(subgroupData.baseline_timestamp)} • Latest {formatShortDateTime(subgroupData.latest_timestamp)}
-                    </p>
-                  ) : null}
-                </div>
-                <label className="flex items-center gap-2 text-sm text-slate-300">
-                  Bucket size
-                  <input
-                    type="number"
-                    min={50}
-                    max={5000}
-                    step={50}
-                    value={bucketSize}
-                    onChange={(event) => setBucketSize(Math.max(50, Number(event.target.value) || 200))}
-                    className="w-28 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-right text-white outline-none"
-                  />
-                </label>
-              </div>
-              {subgroupError ? <p className="mb-3 text-sm text-danger">{subgroupError}</p> : null}
-              {subgroupBusy ? <p className="mb-3 text-sm text-slate-400">Loading subgroup breakdown...</p> : null}
-              {subgroupData && subgroupData.rows.length ? (
-                <div className="overflow-x-auto">
-                  <table className="min-w-[1400px] text-sm">
-                    <thead>
-                      <tr className="border-b border-white/10 text-left text-slate-400">
-                        <th className="px-3 py-3 font-medium">Subgroup</th>
-                        <th className="px-3 py-3 font-medium">Baseline Call OI</th>
-                        <th className="px-3 py-3 font-medium">Baseline Put OI</th>
-                        <th className="px-3 py-3 font-medium">Current Call OI</th>
-                        <th className="px-3 py-3 font-medium">Current Put OI</th>
-                        <th className="px-3 py-3 font-medium">Delta Call</th>
-                        <th className="px-3 py-3 font-medium">Delta Put</th>
-                        <th className="px-3 py-3 font-medium">Adjusted Call</th>
-                        <th className="px-3 py-3 font-medium">Adjusted Put</th>
-                        <th className="px-3 py-3 font-medium">Baseline PCR</th>
-                        <th className="px-3 py-3 font-medium">Current PCR</th>
-                        <th className="px-3 py-3 font-medium">Delta PCR</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {subgroupData.rows.map((row) => (
-                        <tr key={`subgroup-${row.range}`} className="border-b border-white/5">
-                          <td className="px-3 py-3 font-medium text-white">{row.range}</td>
-                          <td className="px-3 py-3 text-slate-200">{formatCompact(row.baseline_call_oi)}</td>
-                          <td className="px-3 py-3 text-slate-200">{formatCompact(row.baseline_put_oi)}</td>
-                          <td className="px-3 py-3 text-slate-200">{formatCompact(row.current_call_oi)}</td>
-                          <td className="px-3 py-3 text-slate-200">{formatCompact(row.current_put_oi)}</td>
-                          <td
-                            className={`px-3 py-3 ${row.delta_call_oi >= 0 ? "text-slate-100" : "text-rose-100"}`}
-                            style={{ backgroundColor: heatColor(row.delta_call_oi, subgroupHeat.maxAbsDeltaCall, "call") }}
-                          >
-                            {formatSignedCompact(row.delta_call_oi)}
-                          </td>
-                          <td
-                            className={`px-3 py-3 ${row.delta_put_oi >= 0 ? "text-slate-100" : "text-rose-100"}`}
-                            style={{ backgroundColor: heatColor(row.delta_put_oi, subgroupHeat.maxAbsDeltaPut, "put") }}
-                          >
-                            {formatSignedCompact(row.delta_put_oi)}
-                          </td>
-                          <td
-                            className="px-3 py-3 text-slate-100"
-                            style={{ backgroundColor: heatColor(row.adjusted_call_oi, subgroupHeat.maxAbsDeltaCall, "call") }}
-                          >
-                            {formatCompact(row.adjusted_call_oi)}
-                          </td>
-                          <td
-                            className="px-3 py-3 text-slate-100"
-                            style={{ backgroundColor: heatColor(row.adjusted_put_oi, subgroupHeat.maxAbsDeltaPut, "put") }}
-                          >
-                            {formatCompact(row.adjusted_put_oi)}
-                          </td>
-                          <td className="px-3 py-3 text-slate-200">{formatFixed(row.baseline_pcr, 4)}</td>
-                          <td className="px-3 py-3 text-slate-200">{formatFixed(row.current_pcr, 4)}</td>
-                          <td
-                            className="px-3 py-3 font-medium text-slate-950"
-                            style={{ backgroundColor: heatColor(clipDeltaPcr(row.delta_pcr), subgroupHeat.maxDeltaPcr, "ratio") }}
-                          >
-                            {formatFixed(clipDeltaPcr(row.delta_pcr), 4)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : null}
             </div>
           </>
         )}
@@ -925,25 +708,6 @@ function formatSignedCompact(value: number) {
   return `${numeric >= 0 ? "+" : "-"}${compact}`;
 }
 
-function formatTableTime(value: string) {
-  return formatChartTime(value);
-}
-
-function heatColor(value: number, maxValue: number, kind: "call" | "put" | "ratio") {
-  const safeValue = asFiniteNumber(value) ?? 0;
-  const safeMax = Math.max(1, asFiniteNumber(maxValue) ?? 1);
-  const intensity = Math.max(0.08, Math.min(Math.abs(safeValue) / safeMax, 1));
-
-  if (kind === "ratio") {
-    return `rgba(255, 209, 102, ${0.12 + intensity * 0.38})`;
-  }
-
-  if (kind === "put") {
-    return safeValue > 0 ? `rgba(0, 212, 170, ${0.12 + intensity * 0.36})` : "rgba(255,255,255,0.04)";
-  }
-
-  return safeValue > 0 ? `rgba(255, 93, 115, ${0.12 + intensity * 0.34})` : "rgba(255,255,255,0.04)";
-}
 
 type StoredPreferences = {
   strikeMode: StrikeMode;

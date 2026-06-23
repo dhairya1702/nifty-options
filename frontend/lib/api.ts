@@ -118,6 +118,31 @@ export type OIGroupedRow = {
   pcr: number;
 };
 
+export type OIIntradayChangeRow = {
+  strike_price: number;
+  baseline_call_oi: number;
+  baseline_put_oi: number;
+  current_call_oi: number;
+  current_put_oi: number;
+  delta_call_oi: number;
+  delta_put_oi: number;
+};
+
+export type OIIntradayChangeResponse = {
+  underlying: string;
+  time_mode: "today" | "previous_day" | "last_30_minutes" | "last_1_hour" | "last_2_hours" | "custom_date" | "custom_range";
+  strike_mode: "atm" | "custom_atm" | "custom";
+  spot_ltp: number | null;
+  reference_strike: number | null;
+  atm_strike: number | null;
+  custom_atm: number | null;
+  strike_min: number | null;
+  strike_max: number | null;
+  baseline_timestamp: string;
+  latest_timestamp: string;
+  rows: OIIntradayChangeRow[];
+};
+
 export type OIResponse<T> = {
   spot_ltp: number | null;
   rows: T[];
@@ -512,6 +537,50 @@ export const fetchPCRScopedSubgroups = (params: {
 export const fetchOIStrikes = () => apiRequest<OIResponse<OIStrikeRow>>("/oi/strikes");
 export const fetchOIChange = () => apiRequest<OIResponse<OIChangeRow>>("/oi/change");
 export const fetchOIGrouped = (bucketSize = 150) => apiRequest<OIGroupedRow[]>(`/oi/grouped?bucket_size=${bucketSize}`);
+export const fetchOIIntradayChange = (params: {
+  strikeMode: "atm" | "custom_atm" | "custom";
+  timeMode: "today" | "previous_day" | "last_30_minutes" | "last_1_hour" | "last_2_hours" | "custom_date" | "custom_range";
+  widthPoints?: number;
+  customAtm?: number;
+  strikeMin?: number;
+  strikeMax?: number;
+  customDate?: string;
+  fromTimestamp?: string;
+  toTimestamp?: string;
+}) => {
+  const search = new URLSearchParams({
+    strike_mode: params.strikeMode,
+    time_mode: params.timeMode
+  });
+
+  if (params.strikeMode === "atm" || params.strikeMode === "custom_atm") {
+    search.set("width_points", String(params.widthPoints ?? 500));
+    if (params.strikeMode === "custom_atm" && params.customAtm != null) {
+      search.set("custom_atm", String(params.customAtm));
+    }
+  } else if (params.strikeMode === "custom") {
+    if (params.strikeMin != null) {
+      search.set("strike_min", String(params.strikeMin));
+    }
+    if (params.strikeMax != null) {
+      search.set("strike_max", String(params.strikeMax));
+    }
+  }
+
+  if (params.timeMode === "custom_date" && params.customDate) {
+    search.set("custom_date", params.customDate);
+  }
+  if (params.timeMode === "custom_range") {
+    if (params.fromTimestamp) {
+      search.set("from_timestamp", params.fromTimestamp);
+    }
+    if (params.toTimestamp) {
+      search.set("to_timestamp", params.toTimestamp);
+    }
+  }
+
+  return apiRequest<OIIntradayChangeResponse>(`/oi/intraday-change?${search.toString()}`);
+};
 export const fetchLevels = () => apiRequest<LevelsResponse>("/levels");
 export const fetchSentiment = () => apiRequest<SentimentResponse>("/sentiment");
 export const fetchSchedulerStatus = () => apiRequest<SchedulerStatus>("/scheduler/status");

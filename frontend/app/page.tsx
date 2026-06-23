@@ -35,6 +35,8 @@ import { Header } from "@/app/components/Header";
 import { LiveOptionContractTable } from "@/app/components/LiveOptionContractTable";
 import { LoginCard } from "@/app/components/LoginCard";
 import { MarketPulseCard } from "@/app/components/MarketPulseCard";
+import { OIChangeBarChart } from "@/app/components/OIChangeBarChart";
+import { PCRBreakdownTables } from "@/app/components/PCRBreakdownTables";
 import { PCRCard } from "@/app/components/PCRCard";
 import { PCRChart } from "@/app/components/PCRChart";
 import { ProbabilityCard } from "@/app/components/ProbabilityCard";
@@ -65,6 +67,7 @@ export default function DashboardPage() {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<DashboardErrors>({});
   const [dataRefreshToken, setDataRefreshToken] = useState("initial");
+  const [globalRefreshTick, setGlobalRefreshTick] = useState(0);
   const refreshInFlightRef = useRef(false);
   const queuedRefreshRef = useRef(false);
   const schedulerSignatureRef = useRef<string | null>(null);
@@ -157,6 +160,7 @@ export default function DashboardPage() {
 
       setErrors(nextErrors);
     } finally {
+      setGlobalRefreshTick((current) => current + 1);
       refreshInFlightRef.current = false;
       setBusy(false);
 
@@ -364,6 +368,15 @@ export default function DashboardPage() {
           <PCRChart
             data={pcrHistory}
             error={errors.history ?? null}
+            underlying={schedulerStatus?.underlying ?? selectedUnderlying}
+            refreshToken={dataRefreshToken}
+          />
+          <OIChangeBarChart
+            underlying={schedulerStatus?.underlying ?? selectedUnderlying}
+            refreshToken={`${dataRefreshToken}:${globalRefreshTick}`}
+            error={errors.live ?? null}
+          />
+          <PCRBreakdownTables
             underlying={schedulerStatus?.underlying ?? selectedUnderlying}
             refreshToken={dataRefreshToken}
           />
