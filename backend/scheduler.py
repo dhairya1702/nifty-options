@@ -14,10 +14,11 @@ from local_db import (
     latest_snapshot_timestamp,
     set_setting,
     snapshot_count,
+    upsert_index_rows,
     upsert_option_snapshots,
     upsert_pcr_rows,
 )
-from zerodha import SUPPORTED_UNDERLYINGS, get_option_chain
+from zerodha import SUPPORTED_UNDERLYINGS, get_option_chain, get_spot_ltp
 
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ class OptionDataScheduler:
             total_put_oi = sum(float(row["oi"]) for row in option_chain if row["option_type"] == "PE")
             pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi else 0.0
             expiry = next((row.get("expiry") for row in option_chain if row.get("expiry")), None)
+            spot_ltp = get_spot_ltp(self.underlying)
 
             upsert_option_snapshots(snapshot_rows)
             upsert_pcr_rows(
@@ -143,6 +145,14 @@ class OptionDataScheduler:
                     "pcr": pcr,
                 }
             )
+            if spot_ltp is not None:
+                upsert_index_rows(
+                    {
+                        "timestamp": timestamp,
+                        "underlying": self.underlying,
+                        "spot_ltp": spot_ltp,
+                    }
+                )
 
             self.last_run = datetime.now(timezone.utc)
             self.last_outcome = "success"

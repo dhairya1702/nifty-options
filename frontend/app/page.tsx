@@ -30,9 +30,7 @@ import {
   type SlabAnalytics
 } from "@/lib/api";
 import { AuthStatusCard } from "@/app/components/AuthStatusCard";
-import { GroupedSlabTable } from "@/app/components/GroupedSlabTable";
 import { Header } from "@/app/components/Header";
-import { LiveOptionContractTable } from "@/app/components/LiveOptionContractTable";
 import { LoginCard } from "@/app/components/LoginCard";
 import { MarketPulseCard } from "@/app/components/MarketPulseCard";
 import { OIChangeBarChart } from "@/app/components/OIChangeBarChart";
@@ -44,7 +42,7 @@ import { SchedulerControl } from "@/app/components/SchedulerControl";
 import { SlabMomentum } from "@/app/components/SlabMomentum";
 import { SupportResistance } from "@/app/components/SupportResistance";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 
 type DashboardErrors = Partial<
   Record<"auth" | "live" | "scheduler" | "overview" | "pcr" | "history" | "slabs" | "probability" | "levels", string>
@@ -385,15 +383,6 @@ export default function DashboardPage() {
         <section className="grid gap-6 xl:grid-cols-2">
           <SlabMomentum slabs={slabs} error={errors.slabs ?? null} />
           <SupportResistance levels={levels} error={errors.levels ?? null} />
-        </section>
-
-        <section className="grid gap-6">
-          {(liveData?.contracts ?? []).map((contract) => (
-            <div key={contract.id} className="grid gap-6">
-              <LiveOptionContractTable contract={contract} />
-              <GroupedSlabTable contract={contract} bucketSize={150} />
-            </div>
-          ))}
         </section>
       </div>
     </main>

@@ -4,8 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { ResponsiveContainer, LineChart, Line, CartesianGrid, Tooltip, XAxis, YAxis, ReferenceLine } from "recharts";
 
 import {
+  fetchPCRIndexHistory,
   fetchPCRScopedHistory,
   fetchPCRScopedSubgroups,
+  type PCRIndexHistoryResponse,
   type PCRHistoryPoint,
   type PCRScopedHistoryResponse,
   type PCRScopedSubgroupResponse
@@ -39,6 +41,8 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
   const [fromTimestamp, setFromTimestamp] = useState("");
   const [toTimestamp, setToTimestamp] = useState("");
   const [bucketSize, setBucketSize] = useState(200);
+  const [indexData, setIndexData] = useState<PCRIndexHistoryResponse | null>(null);
+  const [indexError, setIndexError] = useState<string | null>(null);
   const [scopedData, setScopedData] = useState<PCRScopedHistoryResponse | null>(null);
   const [scopedError, setScopedError] = useState<string | null>(null);
   const [scopedBusy, setScopedBusy] = useState(false);
@@ -197,6 +201,50 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
 
     let cancelled = false;
 
+    async function loadIndexHistory() {
+      try {
+        const response = await fetchPCRIndexHistory({
+          timeMode,
+          customDate: timeMode === "custom_date" ? customDate : undefined,
+          fromTimestamp: timeMode === "custom_range" ? fromTimestamp : undefined,
+          toTimestamp: timeMode === "custom_range" ? toTimestamp : undefined,
+          limit: 128
+        });
+
+        if (!cancelled) {
+          setIndexData(response);
+          setIndexError(null);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setIndexData(null);
+          setIndexError(loadError instanceof Error ? loadError.message : "Failed to load index history");
+        }
+      }
+    }
+
+    if (timeMode === "custom_date" && !customDate) {
+      setIndexData(null);
+      return;
+    }
+    if (timeMode === "custom_range" && (!fromTimestamp || !toTimestamp)) {
+      setIndexData(null);
+      return;
+    }
+
+    loadIndexHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [timeMode, customDate, fromTimestamp, toTimestamp, refreshToken, preferencesReady]);
+
+  useEffect(() => {
+    if (!preferencesReady) {
+      return;
+    }
+
+    let cancelled = false;
+
     async function loadSubgroups() {
       setSubgroupBusy(true);
       try {
@@ -255,6 +303,10 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
   const pcrChartData = useMemo(
     () => addSimpleMovingAverage(chartData, Math.max(2, smaPeriod)),
     [chartData, smaPeriod]
+  );
+  const indexChartData = useMemo(
+    () => addSimpleMovingAverage(indexData?.points ?? [], Math.max(2, smaPeriod), "spot_ltp", "index_sma"),
+    [indexData, smaPeriod]
   );
   const activeError = scopedError ?? (strikeMode === "full" && timeMode === "all" ? (error ?? null) : null);
   const subtitle = buildSubtitle(strikeMode, timeMode, scopedData, underlying);
@@ -479,6 +531,10 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
               <span className="h-0.5 w-5 rounded bg-[#00d4aa]" />
               PCR
             </span>
+            <span className="inline-flex items-center gap-2">
+              <span className="h-0.5 w-5 rounded bg-[#38bdf8]" />
+              Index
+            </span>
             {showSma ? (
               <span className="inline-flex items-center gap-2">
                 <span className="h-0.5 w-5 rounded bg-[#ffd166]" />
@@ -495,6 +551,43 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
           <p className="text-sm text-slate-400">No PCR history available for the selected range.</p>
         ) : (
           <>
+            <div>
+              <div className="mb-3">
+                <p className="text-sm font-semibold text-white">{indexData?.underlying ?? underlying ?? "NIFTY"} Index Over Time</p>
+                <p className="text-xs text-slate-400">Stored spot LTP from scheduler snapshots, using the same time window as the PCR chart.</p>
+              </div>
+              {indexError ? (
+                <p className="text-sm text-danger">{indexError}</p>
+              ) : indexChartData.length === 0 ? (
+                <p className="text-sm text-slate-400">No stored index history yet. New scheduler snapshots will populate this chart.</p>
+              ) : (
+                <div className="h-[260px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={indexChartData}>
+                      <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+                      <XAxis
+                        dataKey="timestamp"
+                        tickFormatter={(value) => formatChartTime(value)}
+                        stroke="#7c879f"
+                      />
+                      <YAxis domain={["auto", "auto"]} stroke="#7c879f" />
+                      <Tooltip
+                        contentStyle={{ background: "#151927", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16 }}
+                        labelFormatter={(value) => formatFullDateTime(value)}
+                        formatter={(value: number, name: string) => [
+                          formatFixed(value, 2),
+                          name === "index_sma" ? `Index SMA(${smaPeriod})` : "Index"
+                        ]}
+                      />
+                      <Line type="monotone" dataKey="spot_ltp" stroke="#38bdf8" strokeWidth={3} dot={{ fill: "#38bdf8" }} />
+                      {showSma ? (
+                        <Line type="monotone" dataKey="index_sma" stroke="#ffd166" strokeWidth={2} dot={false} connectNulls />
+                      ) : null}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
             <div className="h-[320px]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={pcrChartData}>

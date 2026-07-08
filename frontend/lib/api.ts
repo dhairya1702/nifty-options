@@ -48,6 +48,19 @@ export type PCRRangeHistoryPoint = {
   total_put_oi: number;
 };
 
+export type PCRIndexHistoryPoint = {
+  timestamp: string;
+  spot_ltp: number;
+};
+
+export type PCRIndexHistoryResponse = {
+  underlying: string;
+  time_mode: "all" | "today" | "previous_day" | "last_2_days" | "custom_date" | "custom_range";
+  from_timestamp: string | null;
+  to_timestamp: string | null;
+  points: PCRIndexHistoryPoint[];
+};
+
 export type PCRScopedHistoryResponse = {
   strike_mode: "full" | "atm" | "custom_atm" | "custom";
   time_mode: "all" | "today" | "previous_day" | "last_2_days" | "custom_date" | "custom_range";
@@ -491,6 +504,34 @@ export const fetchPCRScopedHistory = (params: {
 
   return apiRequest<PCRScopedHistoryResponse>(`/pcr/history/scoped?${search.toString()}`);
 };
+
+export const fetchPCRIndexHistory = (params: {
+  timeMode: "all" | "today" | "previous_day" | "last_2_days" | "custom_date" | "custom_range";
+  customDate?: string;
+  fromTimestamp?: string;
+  toTimestamp?: string;
+  limit?: number;
+}) => {
+  const search = new URLSearchParams({
+    time_mode: params.timeMode,
+    limit: String(params.limit ?? 128)
+  });
+
+  if (params.timeMode === "custom_date" && params.customDate) {
+    search.set("custom_date", params.customDate);
+  }
+  if (params.timeMode === "custom_range") {
+    if (params.fromTimestamp) {
+      search.set("from_timestamp", params.fromTimestamp);
+    }
+    if (params.toTimestamp) {
+      search.set("to_timestamp", params.toTimestamp);
+    }
+  }
+
+  return apiRequest<PCRIndexHistoryResponse>(`/pcr/index-history?${search.toString()}`);
+};
+
 export const fetchPCRScopedSubgroups = (params: {
   strikeMode: "full" | "atm" | "custom_atm" | "custom";
   timeMode: "all" | "today" | "previous_day" | "last_2_days" | "custom_date" | "custom_range";

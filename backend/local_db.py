@@ -65,6 +65,17 @@ def init_db() -> None:
             create index if not exists pcr_timeseries_timestamp_idx
               on pcr_timeseries (underlying, timestamp desc);
 
+            create table if not exists index_timeseries (
+              id integer primary key autoincrement,
+              timestamp text not null,
+              underlying text not null,
+              spot_ltp real not null,
+              unique (underlying, timestamp)
+            );
+
+            create index if not exists index_timeseries_timestamp_idx
+              on index_timeseries (underlying, timestamp desc);
+
             create table if not exists app_settings (
               key text primary key,
               value text not null,
@@ -124,6 +135,28 @@ def upsert_pcr_rows(rows: dict[str, Any] | list[dict[str, Any]]) -> None:
               total_call_oi = excluded.total_call_oi,
               total_put_oi = excluded.total_put_oi,
               pcr = excluded.pcr
+            """,
+            normalized_rows,
+        )
+
+
+def upsert_index_rows(rows: dict[str, Any] | list[dict[str, Any]]) -> None:
+    normalized_rows = [rows] if isinstance(rows, dict) else rows
+    if not normalized_rows:
+        return
+    init_db()
+    with _connect() as connection:
+        connection.executemany(
+            """
+            insert into index_timeseries (
+              timestamp, underlying, spot_ltp
+            )
+            values (
+              :timestamp, :underlying, :spot_ltp
+            )
+            on conflict (underlying, timestamp)
+            do update set
+              spot_ltp = excluded.spot_ltp
             """,
             normalized_rows,
         )
@@ -291,6 +324,39 @@ def pcr_range_history_filtered(
     return history
 
 
+def index_history_filtered(
+    underlying: str,
+    *,
+    limit: int | None = None,
+    from_timestamp: str | None = None,
+    to_timestamp: str | None = None,
+) -> list[dict[str, Any]]:
+    init_db()
+    query = """
+        select timestamp, spot_ltp
+        from index_timeseries
+        where underlying = ?
+    """
+    params: list[Any] = [underlying]
+
+    if from_timestamp:
+        query += " and datetime(timestamp) >= datetime(?)"
+        params.append(from_timestamp)
+    if to_timestamp:
+        query += " and datetime(timestamp) <= datetime(?)"
+        params.append(to_timestamp)
+
+    query += " order by datetime(timestamp) desc"
+    if limit is not None:
+        query += " limit ?"
+        params.append(limit)
+
+    with _connect() as connection:
+        rows = connection.execute(query, params).fetchall()
+
+    return list(reversed(_rows_to_dicts(rows)))
+
+
 def pcr_rows_for_analytics(underlying: str, limit: int) -> list[dict[str, Any]]:
     init_db()
     with _connect() as connection:
@@ -397,9 +463,11 @@ def latest_stored_timestamp(underlying: str) -> str | None:
               select timestamp from pcr_timeseries where underlying = ?
               union all
               select timestamp from option_snapshots where underlying = ?
+              union all
+              select timestamp from index_timeseries where underlying = ?
             )
             """,
-            (underlying, underlying),
+            (underlying, underlying, underlying),
         ).fetchone()
     return str(row["timestamp"]) if row and row["timestamp"] else None
 
@@ -409,6 +477,7 @@ def delete_underlying_history(underlying: str) -> None:
     with _connect() as connection:
         connection.execute("delete from option_snapshots where underlying = ?", (underlying,))
         connection.execute("delete from pcr_timeseries where underlying = ?", (underlying,))
+        connection.execute("delete from index_timeseries where underlying = ?", (underlying,))
 
 
 def get_setting(key: str) -> str | None:

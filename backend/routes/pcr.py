@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Query
 
 from local_db import (
+    index_history_filtered,
     latest_pcr_row,
     pcr_history,
     pcr_history_filtered,
@@ -342,6 +343,31 @@ def get_pcr_history_scoped(
         "strike_min": effective_min,
         "strike_max": effective_max,
         "width_points": width_points if normalized_strike_mode in {"atm", "custom_atm"} else None,
+        "from_timestamp": effective_from,
+        "to_timestamp": effective_to,
+        "points": points,
+    }
+
+
+@router.get("/index-history")
+def get_index_history(
+    limit: int = Query(128, ge=1, le=500),
+    time_mode: str = Query("all"),
+    custom_date: str | None = Query(default=None),
+    from_timestamp: str | None = Query(default=None),
+    to_timestamp: str | None = Query(default=None),
+) -> dict:
+    normalized_time_mode = time_mode.lower()
+    effective_from, effective_to = _resolve_time_window(normalized_time_mode, custom_date, from_timestamp, to_timestamp)
+    points = index_history_filtered(
+        option_scheduler.underlying,
+        limit=limit,
+        from_timestamp=effective_from,
+        to_timestamp=effective_to,
+    )
+    return {
+        "underlying": option_scheduler.underlying,
+        "time_mode": normalized_time_mode,
         "from_timestamp": effective_from,
         "to_timestamp": effective_to,
         "points": points,
