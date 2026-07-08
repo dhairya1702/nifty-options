@@ -61,6 +61,25 @@ python seed_historical.py
 
 The seed script fetches a live NIFTY option chain once, creates 10 historical snapshots spaced 15 minutes apart, applies slight OI variation, and inserts matching PCR rows into SQLite.
 
+## Local Strategy Backtester
+
+The dashboard simulator has been removed. Use the local CLI backtester against the SQLite data instead:
+
+```bash
+cd backend
+./.venv/bin/python run_strategy_backtest.py --underlying NIFTY --limit 500
+./.venv/bin/python run_strategy_backtest.py --underlying BANKNIFTY --limit 500
+```
+
+Useful options:
+
+```bash
+./.venv/bin/python run_strategy_backtest.py --underlying NIFTY --from 2026-06-01T09:15:00+05:30 --to 2026-06-30T15:30:00+05:30
+./.venv/bin/python run_strategy_backtest.py --underlying BANKNIFTY --capital 200000 --lots 2 --show-trades 100
+```
+
+Running the script also initializes the local database and adds the nullable `option_snapshots.volume` column if it is missing. Older rows will have empty volume values; new scheduler and backfill rows store volume going forward.
+
 ## Frontend Setup
 
 ```bash
