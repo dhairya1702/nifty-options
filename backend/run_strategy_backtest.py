@@ -55,6 +55,21 @@ class Position:
     entry_score: float
 
 
+@dataclass
+class BacktestResult:
+    trades: list[Trade]
+    signals: list[dict[str, Any]]
+    raw_rows: int
+    snapshot_timestamps: int
+    entry_window_signals: int
+    threshold_signals: int
+    confirmed_entries: int
+    skipped_missing_atm: int
+    skipped_no_entry_window: int
+    skipped_position_open: int
+    volume_rows: int
+
+
 def _parse_timestamp(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -186,15 +201,29 @@ def _score_signal(
     ce = snapshot.get((atm_strike, "CE"))
     pe = snapshot.get((atm_strike, "PE"))
     if not ce or not pe or ce["ltp"] <= 0 or pe["ltp"] <= 0:
+        missing_reason = "missing_atm_leg" if not ce or not pe else "missing_atm_ltp"
         return {
             "timestamp": timestamp,
             "action": "wait",
             "score": 0.0,
             "ce_score": 0.0,
             "pe_score": 0.0,
+            "oi_score": 0.0,
+            "pcr_score": 0.0,
+            "ltp_score": 0.0,
+            "index_score": 0.0,
+            "volume_score": 0.0,
             "atm_strike": atm_strike,
             "delta_pcr": 0.0,
             "spot": spot,
+            "spot_delta": 0.0,
+            "call_oi_delta": 0.0,
+            "put_oi_delta": 0.0,
+            "call_ltp_delta": 0.0,
+            "put_ltp_delta": 0.0,
+            "call_volume_delta": 0.0,
+            "put_volume_delta": 0.0,
+            "skip_reason": missing_reason,
         }
 
     call_oi_delta = _leg_delta(snapshot, previous, atm_strike, "CE", "oi")
@@ -206,49 +235,55 @@ def _score_signal(
     delta_pcr = _range_delta_pcr(snapshot, previous, atm_strike, step)
     spot_delta = (spot or 0.0) - (previous_spot or 0.0)
 
-    ce_score = 0.0
-    pe_score = 0.0
+    ce_components = {"oi": 0.0, "pcr": 0.0, "ltp": 0.0, "index": 0.0, "volume": 0.0}
+    pe_components = {"oi": 0.0, "pcr": 0.0, "ltp": 0.0, "index": 0.0, "volume": 0.0}
 
     if call_oi_delta > 0:
-        ce_score += 18
+        ce_components["oi"] += 18
     if put_oi_delta < 0:
-        ce_score += 12
+        ce_components["oi"] += 12
     if put_oi_delta > 0:
-        pe_score += 18
+        pe_components["oi"] += 18
     if call_oi_delta < 0:
-        pe_score += 12
+        pe_components["oi"] += 12
 
     if delta_pcr >= 1.2:
-        ce_score += 20
+        ce_components["pcr"] += 20
     elif delta_pcr <= 0.8 and delta_pcr > 0:
-        pe_score += 20
+        pe_components["pcr"] += 20
     else:
-        ce_score += 6
-        pe_score += 6
+        ce_components["pcr"] += 6
+        pe_components["pcr"] += 6
 
     if call_ltp_delta > 0:
-        ce_score += 20
+        ce_components["ltp"] += 20
     if put_ltp_delta > 0:
-        pe_score += 20
+        pe_components["ltp"] += 20
 
     if spot_delta > 0:
-        ce_score += 15
+        ce_components["index"] += 15
     elif spot_delta < 0:
-        pe_score += 15
+        pe_components["index"] += 15
 
     if call_volume_delta > 0 and call_volume_delta >= put_volume_delta:
-        ce_score += 15
+        ce_components["volume"] += 15
     if put_volume_delta > 0 and put_volume_delta >= call_volume_delta:
-        pe_score += 15
+        pe_components["volume"] += 15
+
+    ce_score = sum(ce_components.values())
+    pe_score = sum(pe_components.values())
 
     action = "wait"
     score = max(ce_score, pe_score)
+    selected_components = ce_components if ce_score >= pe_score else pe_components
     if ce_score >= SCORE_THRESHOLD and ce_score > pe_score:
         action = "CE"
         score = ce_score
+        selected_components = ce_components
     elif pe_score >= SCORE_THRESHOLD and pe_score > ce_score:
         action = "PE"
         score = pe_score
+        selected_components = pe_components
 
     return {
         "timestamp": timestamp,
@@ -256,13 +291,22 @@ def _score_signal(
         "score": round(score, 2),
         "ce_score": round(ce_score, 2),
         "pe_score": round(pe_score, 2),
+        "oi_score": round(selected_components["oi"], 2),
+        "pcr_score": round(selected_components["pcr"], 2),
+        "ltp_score": round(selected_components["ltp"], 2),
+        "index_score": round(selected_components["index"], 2),
+        "volume_score": round(selected_components["volume"], 2),
         "atm_strike": atm_strike,
         "delta_pcr": round(delta_pcr, 4),
         "call_oi_delta": call_oi_delta,
         "put_oi_delta": put_oi_delta,
         "call_ltp_delta": call_ltp_delta,
         "put_ltp_delta": put_ltp_delta,
+        "call_volume_delta": call_volume_delta,
+        "put_volume_delta": put_volume_delta,
         "spot": spot,
+        "spot_delta": spot_delta,
+        "skip_reason": "",
     }
 
 
@@ -297,7 +341,7 @@ def _exit_trade(
     )
 
 
-def run_backtest(args: argparse.Namespace) -> tuple[list[Trade], list[dict[str, Any]]]:
+def run_backtest(args: argparse.Namespace) -> BacktestResult:
     underlying = args.underlying.upper()
     rows = strategy_backtest_rows(
         underlying,
@@ -321,7 +365,16 @@ def run_backtest(args: argparse.Namespace) -> tuple[list[Trade], list[dict[str, 
     previous_spot: float | None = None
     confirmation_side: str | None = None
     confirmation_count = 0
+    exit_flip_side: str | None = None
+    exit_flip_count = 0
     current_day: str | None = None
+    entry_window_signals = 0
+    threshold_signals = 0
+    confirmed_entries = 0
+    skipped_missing_atm = 0
+    skipped_no_entry_window = 0
+    skipped_position_open = 0
+    volume_rows = sum(1 for row in rows if _safe_float(row.get("volume")) > 0)
 
     for timestamp in timestamps:
         day = _trading_day(timestamp)
@@ -329,6 +382,8 @@ def run_backtest(args: argparse.Namespace) -> tuple[list[Trade], list[dict[str, 
             current_day = day
             confirmation_side = None
             confirmation_count = 0
+            exit_flip_side = None
+            exit_flip_count = 0
             previous_snapshot = None
             previous_spot = None
 
@@ -344,6 +399,12 @@ def run_backtest(args: argparse.Namespace) -> tuple[list[Trade], list[dict[str, 
 
         signal = _score_signal(timestamp, snapshot, previous_snapshot, previous_spot, spot, atm_strike, step)
         signals.append(signal)
+        if signal.get("skip_reason"):
+            skipped_missing_atm += 1
+        if _in_entry_window(timestamp):
+            entry_window_signals += 1
+        if signal["action"] in {"CE", "PE"} and float(signal["score"]) >= SCORE_THRESHOLD:
+            threshold_signals += 1
 
         if position:
             current_leg = snapshot.get((position.strike_price, position.side))
@@ -355,15 +416,26 @@ def run_backtest(args: argparse.Namespace) -> tuple[list[Trade], list[dict[str, 
                 elif current_ltp <= position.entry_ltp * (1.0 - STOP_LOSS_PCT):
                     exit_reason = "stop_loss"
                 elif signal["action"] != "wait" and signal["action"] != position.side and signal["score"] >= SCORE_THRESHOLD:
-                    exit_reason = "signal_flip"
+                    if exit_flip_side == signal["action"]:
+                        exit_flip_count += 1
+                    else:
+                        exit_flip_side = str(signal["action"])
+                        exit_flip_count = 1
+                    if exit_flip_count >= CONFIRMATION_BARS:
+                        exit_reason = "signal_flip_confirmed"
                 elif _is_square_off_time(timestamp):
                     exit_reason = "square_off"
+                else:
+                    exit_flip_side = None
+                    exit_flip_count = 0
 
             if exit_reason and current_ltp > 0:
                 trades.append(_exit_trade(position, timestamp, current_ltp, exit_reason, float(signal["score"])))
                 position = None
                 confirmation_side = None
                 confirmation_count = 0
+                exit_flip_side = None
+                exit_flip_count = 0
 
         if not position and _in_entry_window(timestamp) and signal["action"] in {"CE", "PE"}:
             if confirmation_side == signal["action"]:
@@ -388,8 +460,13 @@ def run_backtest(args: argparse.Namespace) -> tuple[list[Trade], list[dict[str, 
                         entry_cost=entry_cost,
                         entry_score=float(signal["score"]),
                     )
+                    confirmed_entries += 1
                     confirmation_side = None
                     confirmation_count = 0
+        elif position and signal["action"] in {"CE", "PE"}:
+            skipped_position_open += 1
+        elif not _in_entry_window(timestamp) and signal["action"] in {"CE", "PE"}:
+            skipped_no_entry_window += 1
         elif signal["action"] == "wait":
             confirmation_side = None
             confirmation_count = 0
@@ -403,10 +480,24 @@ def run_backtest(args: argparse.Namespace) -> tuple[list[Trade], list[dict[str, 
         current_ltp = _safe_float(current_leg.get("ltp")) if current_leg else position.entry_ltp
         trades.append(_exit_trade(position, timestamps[-1], current_ltp, "end_of_data", 0.0))
 
-    return trades, signals
+    return BacktestResult(
+        trades=trades,
+        signals=signals,
+        raw_rows=len(rows),
+        snapshot_timestamps=len(timestamps),
+        entry_window_signals=entry_window_signals,
+        threshold_signals=threshold_signals,
+        confirmed_entries=confirmed_entries,
+        skipped_missing_atm=skipped_missing_atm,
+        skipped_no_entry_window=skipped_no_entry_window,
+        skipped_position_open=skipped_position_open,
+        volume_rows=volume_rows,
+    )
 
 
-def _print_report(args: argparse.Namespace, trades: list[Trade], signals: list[dict[str, Any]]) -> None:
+def _print_report(args: argparse.Namespace, result: BacktestResult) -> None:
+    trades = result.trades
+    signals = result.signals
     total_pnl = sum(trade.net_pnl for trade in trades)
     wins = [trade for trade in trades if trade.net_pnl > 0]
     losses = [trade for trade in trades if trade.net_pnl <= 0]
@@ -416,23 +507,60 @@ def _print_report(args: argparse.Namespace, trades: list[Trade], signals: list[d
 
     print("Strategy Backtest")
     print(f"Underlying: {args.underlying.upper()}")
-    print(f"Rows tested: {len(signals)}")
+    print(f"Raw option rows loaded: {result.raw_rows}")
+    print(f"Snapshot timestamps loaded: {result.snapshot_timestamps}")
+    print(f"Signal timestamps tested: {len(signals)}")
     print(f"Trades: {len(trades)} | Wins: {len(wins)} | Losses: {len(losses)} | Win rate: {win_rate:.2f}%")
     print(f"Net PnL: {total_pnl:.2f} | Return on capital: {return_pct:.2f}%")
     print(f"Avg win: {(mean([trade.net_pnl for trade in wins]) if wins else 0.0):.2f}")
     print(f"Avg loss: {(mean([trade.net_pnl for trade in losses]) if losses else 0.0):.2f}")
     print("")
+
+    volume_pct = (result.volume_rows / result.raw_rows * 100) if result.raw_rows else 0.0
+    print("Diagnostics")
+    print(f"Entry-window signals: {result.entry_window_signals}")
+    print(f"Threshold signals: {result.threshold_signals}")
+    print(f"Confirmed entries: {result.confirmed_entries}")
+    print(f"Signals skipped for missing ATM data: {result.skipped_missing_atm}")
+    print(f"Threshold signals after entry cutoff: {result.skipped_no_entry_window}")
+    print(f"Threshold signals skipped while position open: {result.skipped_position_open}")
+    print(f"Rows with volume: {result.volume_rows}/{result.raw_rows} ({volume_pct:.1f}%)")
+    print("")
+
+    daily: dict[str, dict[str, float]] = defaultdict(lambda: {"signals": 0, "trades": 0, "pnl": 0.0})
+    for signal in signals:
+        daily[_trading_day(str(signal["timestamp"]))]["signals"] += 1
+    for trade in trades:
+        row = daily[_trading_day(trade.entry_timestamp)]
+        row["trades"] += 1
+        row["pnl"] += trade.net_pnl
+
+    print("Daily summary")
+    print("day        signals trades pnl")
+    for day in sorted(daily.keys())[-args.show_days :]:
+        row = daily[day]
+        print(f"{day} {int(row['signals']):7d} {int(row['trades']):6d} {row['pnl']:8.2f}")
+    print("")
+
     print("Recent signals")
-    print("time              action score ce    pe    atm     dPCR")
-    for signal in signals[-10:]:
+    print("time              act score ce    pe    oi pcr ltp idx vol atm     dPCR   spot_d  callOI   putOI")
+    for signal in signals[-args.show_signals :]:
         print(
             f"{_format_timestamp(signal['timestamp']):16} "
-            f"{signal['action']:>6} "
+            f"{signal['action']:>3} "
             f"{float(signal['score']):5.1f} "
             f"{float(signal['ce_score']):5.1f} "
             f"{float(signal['pe_score']):5.1f} "
+            f"{float(signal.get('oi_score') or 0):4.0f} "
+            f"{float(signal.get('pcr_score') or 0):3.0f} "
+            f"{float(signal.get('ltp_score') or 0):3.0f} "
+            f"{float(signal.get('index_score') or 0):3.0f} "
+            f"{float(signal.get('volume_score') or 0):3.0f} "
             f"{float(signal.get('atm_strike') or 0):7.0f} "
-            f"{float(signal.get('delta_pcr') or 0):5.2f}"
+            f"{float(signal.get('delta_pcr') or 0):6.2f} "
+            f"{float(signal.get('spot_delta') or 0):8.2f} "
+            f"{float(signal.get('call_oi_delta') or 0):7.0f} "
+            f"{float(signal.get('put_oi_delta') or 0):7.0f}"
         )
 
     print("")
@@ -465,14 +593,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--to", dest="to_timestamp", default=None, help="Inclusive ISO timestamp upper bound.")
     parser.add_argument("--limit", type=int, default=None, help="Use only the latest N snapshot timestamps.")
     parser.add_argument("--show-trades", type=int, default=50)
+    parser.add_argument("--show-signals", type=int, default=20)
+    parser.add_argument("--show-days", type=int, default=20)
     return parser.parse_args()
 
 
 def main() -> None:
     init_db()
     args = parse_args()
-    trades, signals = run_backtest(args)
-    _print_report(args, trades, signals)
+    result = run_backtest(args)
+    _print_report(args, result)
 
 
 if __name__ == "__main__":

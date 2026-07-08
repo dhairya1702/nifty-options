@@ -76,9 +76,12 @@ Useful options:
 ```bash
 ./.venv/bin/python run_strategy_backtest.py --underlying NIFTY --from 2026-06-01T09:15:00+05:30 --to 2026-06-30T15:30:00+05:30
 ./.venv/bin/python run_strategy_backtest.py --underlying BANKNIFTY --capital 200000 --lots 2 --show-trades 100
+./.venv/bin/python run_strategy_backtest.py --underlying NIFTY --limit 5000 --show-signals 100 --show-days 40
 ```
 
 Running the script also initializes the local database and adds the nullable `option_snapshots.volume` column if it is missing. Older rows will have empty volume values; new scheduler and backfill rows store volume going forward.
+
+The report includes score diagnostics, daily summaries, volume coverage, skipped entry counts, and the recent signal breakdown. The signal columns show the selected side's score components: OI, delta PCR, LTP, index, and volume.
 
 ## Frontend Setup
 
