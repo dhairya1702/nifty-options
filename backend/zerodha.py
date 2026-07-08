@@ -18,11 +18,13 @@ NFO_EXCHANGE = "NFO"
 NSE_EXCHANGE = "NSE"
 NFO_INSTRUMENTS_CACHE_TTL = timedelta(minutes=30)
 NFO_INSTRUMENTS_FAILURE_COOLDOWN = timedelta(minutes=5)
+NSE_INSTRUMENTS_CACHE_TTL = timedelta(hours=6)
+NSE_INSTRUMENTS_FAILURE_COOLDOWN = timedelta(minutes=5)
 LIVE_CONTRACTS_CACHE_TTL = timedelta(minutes=2)
 SUPPORTED_UNDERLYINGS = {
-    "NIFTY": {"instrument_name": "NIFTY", "spot_symbol": "NSE:NIFTY 50"},
-    "BANKNIFTY": {"instrument_name": "BANKNIFTY", "spot_symbol": "NSE:NIFTY BANK"},
-    "FINNIFTY": {"instrument_name": "FINNIFTY", "spot_symbol": "NSE:NIFTY FIN SERVICE"},
+    "NIFTY": {"instrument_name": "NIFTY", "spot_symbol": "NSE:NIFTY 50", "index_tradingsymbol": "NIFTY 50"},
+    "BANKNIFTY": {"instrument_name": "BANKNIFTY", "spot_symbol": "NSE:NIFTY BANK", "index_tradingsymbol": "NIFTY BANK"},
+    "FINNIFTY": {"instrument_name": "FINNIFTY", "spot_symbol": "NSE:NIFTY FIN SERVICE", "index_tradingsymbol": "NIFTY FIN SERVICE"},
 }
 LOT_SIZES = {"NIFTY": 75, "BANKNIFTY": 30}
 _QUOTE_OI_CACHE: dict[str, float] = {}
@@ -30,6 +32,10 @@ _NFO_INSTRUMENTS_CACHE: list[dict[str, Any]] = []
 _NFO_INSTRUMENTS_CACHE_FETCHED_AT: datetime | None = None
 _NFO_INSTRUMENTS_LAST_FAILURE_AT: datetime | None = None
 _NFO_INSTRUMENTS_LAST_FAILURE_REASON: str | None = None
+_NSE_INSTRUMENTS_CACHE: list[dict[str, Any]] = []
+_NSE_INSTRUMENTS_CACHE_FETCHED_AT: datetime | None = None
+_NSE_INSTRUMENTS_LAST_FAILURE_AT: datetime | None = None
+_NSE_INSTRUMENTS_LAST_FAILURE_REASON: str | None = None
 _LIVE_CONTRACTS_CACHE: list[dict[str, Any]] = []
 _LIVE_CONTRACTS_CACHE_FETCHED_AT: datetime | None = None
 
@@ -134,6 +140,55 @@ def _get_nfo_instruments() -> list[dict[str, Any]]:
             return _NFO_INSTRUMENTS_CACHE
         logger.exception("Failed to fetch NFO instruments from Zerodha")
         raise ZerodhaClientError(f"Failed to fetch NFO instruments: {exc}") from exc
+
+
+def _get_nse_instruments() -> list[dict[str, Any]]:
+    global _NSE_INSTRUMENTS_CACHE_FETCHED_AT, _NSE_INSTRUMENTS_LAST_FAILURE_AT, _NSE_INSTRUMENTS_LAST_FAILURE_REASON
+
+    now = datetime.now()
+    if _NSE_INSTRUMENTS_CACHE and _NSE_INSTRUMENTS_CACHE_FETCHED_AT:
+        if now - _NSE_INSTRUMENTS_CACHE_FETCHED_AT < NSE_INSTRUMENTS_CACHE_TTL:
+            return _NSE_INSTRUMENTS_CACHE
+    if _NSE_INSTRUMENTS_LAST_FAILURE_AT and _NSE_INSTRUMENTS_LAST_FAILURE_REASON:
+        if now - _NSE_INSTRUMENTS_LAST_FAILURE_AT < NSE_INSTRUMENTS_FAILURE_COOLDOWN:
+            if _NSE_INSTRUMENTS_CACHE:
+                logger.warning("Using stale cached NSE instruments during cooldown after failure: %s", _NSE_INSTRUMENTS_LAST_FAILURE_REASON)
+                return _NSE_INSTRUMENTS_CACHE
+            raise ZerodhaClientError(
+                "Zerodha rate limit is active for NSE instruments. Wait a few minutes before retrying index history."
+            )
+
+    kite = get_kite_client()
+
+    try:
+        instruments = kite.instruments(NSE_EXCHANGE)
+        _NSE_INSTRUMENTS_CACHE.clear()
+        _NSE_INSTRUMENTS_CACHE.extend(instruments)
+        _NSE_INSTRUMENTS_CACHE_FETCHED_AT = now
+        _NSE_INSTRUMENTS_LAST_FAILURE_AT = None
+        _NSE_INSTRUMENTS_LAST_FAILURE_REASON = None
+        return _NSE_INSTRUMENTS_CACHE
+    except TokenException as exc:
+        _handle_token_exception(exc)
+        raise ZerodhaClientError("Zerodha session expired. Complete login again.") from exc
+    except NetworkException as exc:
+        _NSE_INSTRUMENTS_LAST_FAILURE_AT = now
+        _NSE_INSTRUMENTS_LAST_FAILURE_REASON = str(exc)
+        if _NSE_INSTRUMENTS_CACHE:
+            logger.warning("Using stale cached NSE instruments after network failure: %s", exc)
+            return _NSE_INSTRUMENTS_CACHE
+        logger.exception("Failed to fetch NSE instruments from Zerodha")
+        raise ZerodhaClientError(
+            "Zerodha rate limit is active for NSE instruments. Wait a few minutes before retrying index history."
+        ) from exc
+    except Exception as exc:
+        _NSE_INSTRUMENTS_LAST_FAILURE_AT = now
+        _NSE_INSTRUMENTS_LAST_FAILURE_REASON = str(exc)
+        if _NSE_INSTRUMENTS_CACHE:
+            logger.warning("Using stale cached NSE instruments after fetch failure: %s", exc)
+            return _NSE_INSTRUMENTS_CACHE
+        logger.exception("Failed to fetch NSE instruments from Zerodha")
+        raise ZerodhaClientError(f"Failed to fetch NSE instruments: {exc}") from exc
 
 
 def _require_access_token() -> str:
@@ -248,6 +303,80 @@ def get_spot_ltp(underlying: str = "NIFTY") -> float | None:
     except Exception:
         logger.exception("Failed to fetch %s spot quote", underlying)
         return None
+
+
+def get_spot_ltps(underlyings: list[str]) -> dict[str, float]:
+    normalized_underlyings = [_validate_underlying(underlying) for underlying in underlyings]
+    try:
+        kite = get_kite_client()
+        _require_access_token()
+        symbol_to_underlying = {
+            str(SUPPORTED_UNDERLYINGS[underlying]["spot_symbol"]): underlying
+            for underlying in normalized_underlyings
+        }
+        quotes = kite.quote(list(symbol_to_underlying.keys()))
+    except TokenException as exc:
+        _handle_token_exception(exc)
+        logger.info("Spot quotes skipped because Zerodha session expired")
+        return {}
+    except Exception:
+        logger.exception("Failed to fetch spot quotes for %s", ", ".join(normalized_underlyings))
+        return {}
+
+    result: dict[str, float] = {}
+    for symbol, underlying in symbol_to_underlying.items():
+        last_price = (quotes.get(symbol) or {}).get("last_price")
+        if last_price is not None:
+            result[underlying] = float(last_price)
+    return result
+
+
+def get_historical_index_rows(
+    underlying: str,
+    from_dt: datetime,
+    to_dt: datetime,
+    interval: str = "5minute",
+) -> list[dict[str, Any]]:
+    underlying = _validate_underlying(underlying)
+    _require_access_token()
+    target = str(SUPPORTED_UNDERLYINGS[underlying]["index_tradingsymbol"])
+    instruments = _get_nse_instruments()
+    instrument = next(
+        (
+            row
+            for row in instruments
+            if str(row.get("tradingsymbol") or "").upper() == target.upper()
+            or str(row.get("name") or "").upper() == target.upper()
+        ),
+        None,
+    )
+    if not instrument:
+        raise ZerodhaClientError(f"No NSE index instrument found for {underlying} ({target})")
+
+    kite = get_kite_client()
+    try:
+        candles = kite.historical_data(
+            int(instrument["instrument_token"]),
+            from_dt,
+            to_dt,
+            interval,
+            oi=False,
+        )
+    except TokenException as exc:
+        _handle_token_exception(exc)
+        raise ZerodhaClientError("Zerodha session expired. Complete login again.") from exc
+    except Exception as exc:
+        logger.exception("Failed to fetch %s index history", underlying)
+        raise ZerodhaClientError(f"Failed to fetch {underlying} index history: {exc}") from exc
+
+    return [
+        {
+            "timestamp": candle["date"].isoformat(),
+            "underlying": underlying,
+            "spot_ltp": float(candle.get("close") or 0.0),
+        }
+        for candle in candles
+    ]
 
 
 def get_nearest_expiry_for_underlying(underlying: str = "NIFTY") -> date | None:

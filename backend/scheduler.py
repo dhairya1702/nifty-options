@@ -18,7 +18,7 @@ from local_db import (
     upsert_option_snapshots,
     upsert_pcr_rows,
 )
-from zerodha import SUPPORTED_UNDERLYINGS, get_option_chain, get_spot_ltp
+from zerodha import SUPPORTED_UNDERLYINGS, get_historical_index_rows, get_option_chain, get_spot_ltps
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ IST = ZoneInfo("Asia/Kolkata")
 MARKET_OPEN = time(9, 15)
 MARKET_CLOSE = time(15, 30)
 SETTING_PREFIX = "scheduler"
+INDEX_UNDERLYINGS = ["NIFTY", "BANKNIFTY"]
 
 
 class OptionDataScheduler:
@@ -132,7 +133,7 @@ class OptionDataScheduler:
             total_put_oi = sum(float(row["oi"]) for row in option_chain if row["option_type"] == "PE")
             pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi else 0.0
             expiry = next((row.get("expiry") for row in option_chain if row.get("expiry")), None)
-            spot_ltp = get_spot_ltp(self.underlying)
+            spot_ltps = get_spot_ltps(INDEX_UNDERLYINGS)
 
             upsert_option_snapshots(snapshot_rows)
             upsert_pcr_rows(
@@ -145,14 +146,15 @@ class OptionDataScheduler:
                     "pcr": pcr,
                 }
             )
-            if spot_ltp is not None:
-                upsert_index_rows(
-                    {
-                        "timestamp": timestamp,
-                        "underlying": self.underlying,
-                        "spot_ltp": spot_ltp,
-                    }
-                )
+            index_rows = [
+                {
+                    "timestamp": timestamp,
+                    "underlying": underlying,
+                    "spot_ltp": spot_ltp,
+                }
+                for underlying, spot_ltp in spot_ltps.items()
+            ]
+            upsert_index_rows(index_rows)
 
             self.last_run = datetime.now(timezone.utc)
             self.last_outcome = "success"
@@ -214,11 +216,48 @@ class OptionDataScheduler:
             self.last_error = f"Catch-up failed: {exc}"
             return self.last_catch_up
 
+    def catch_up_index_history(self) -> dict[str, Any]:
+        now_ist = datetime.now(IST)
+        start_ist = datetime.combine(now_ist.date(), MARKET_OPEN, tzinfo=IST)
+        end_ist = min(now_ist, datetime.combine(now_ist.date(), MARKET_CLOSE, tzinfo=IST))
+        if now_ist.weekday() >= 5 or end_ist <= start_ist:
+            return {
+                "underlyings": INDEX_UNDERLYINGS,
+                "from_timestamp": start_ist.isoformat(),
+                "to_timestamp": end_ist.isoformat(),
+                "points_inserted": 0,
+                "catch_up_performed": False,
+            }
+
+        inserted = 0
+        errors: dict[str, str] = {}
+        for underlying in INDEX_UNDERLYINGS:
+            try:
+                rows = get_historical_index_rows(underlying, start_ist, end_ist, interval="5minute")
+                upsert_index_rows(rows)
+                inserted += len(rows)
+            except Exception as exc:
+                logger.exception("Index catch-up failed for %s", underlying)
+                errors[underlying] = str(exc)
+
+        result: dict[str, Any] = {
+            "underlyings": INDEX_UNDERLYINGS,
+            "from_timestamp": start_ist.isoformat(),
+            "to_timestamp": end_ist.isoformat(),
+            "points_inserted": inserted,
+            "catch_up_performed": inserted > 0,
+        }
+        if errors:
+            result["errors"] = errors
+            self.last_error = f"Index catch-up failed: {errors}"
+        return result
+
     def start(self, *, resume: bool = False) -> dict[str, Any]:
         self.start_engine()
         self.last_error = None
         self.last_outcome = "starting"
         self.catch_up_history()
+        self.catch_up_index_history()
         existing = self.scheduler.get_job(JOB_ID)
         if existing:
             self.scheduler.remove_job(JOB_ID)

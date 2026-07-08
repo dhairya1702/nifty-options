@@ -3,8 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  fetchPCRIndexHistory,
   fetchPCRScopedHistory,
   fetchPCRScopedSubgroups,
+  type PCRIndexHistoryResponse,
   type PCRScopedHistoryResponse,
   type PCRScopedSubgroupResponse
 } from "@/lib/api";
@@ -21,6 +23,7 @@ const STORAGE_KEY = "options-dashboard:pcr-chart-preferences";
 
 export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTablesProps) {
   const [bucketSize, setBucketSize] = useState(200);
+  const [indexData, setIndexData] = useState<PCRIndexHistoryResponse | null>(null);
   const [scopedData, setScopedData] = useState<PCRScopedHistoryResponse | null>(null);
   const [subgroupData, setSubgroupData] = useState<PCRScopedSubgroupResponse | null>(null);
   const [subgroupError, setSubgroupError] = useState<string | null>(null);
@@ -86,6 +89,43 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
 
     let cancelled = false;
 
+    async function loadIndexHistory() {
+      try {
+        const response = await fetchPCRIndexHistory({
+          timeMode: prefs.timeMode,
+          customDate: prefs.timeMode === "custom_date" ? prefs.customDate : undefined,
+          fromTimestamp: prefs.timeMode === "custom_range" ? prefs.fromTimestamp : undefined,
+          toTimestamp: prefs.timeMode === "custom_range" ? prefs.toTimestamp : undefined,
+          limit: 500
+        });
+        if (!cancelled) {
+          setIndexData(response);
+        }
+      } catch {
+        if (!cancelled) {
+          setIndexData(null);
+        }
+      }
+    }
+
+    if (!isValidPreferences(prefs)) {
+      setIndexData(null);
+      return;
+    }
+
+    loadIndexHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [preferencesReady, prefs, refreshToken]);
+
+  useEffect(() => {
+    if (!preferencesReady) {
+      return;
+    }
+
+    let cancelled = false;
+
     async function loadSubgroups() {
       setSubgroupBusy(true);
       try {
@@ -137,6 +177,7 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
     const firstPoint = chartData[0];
     const baseCallOi = "total_call_oi" in firstPoint ? Number(firstPoint.total_call_oi ?? 0) : 0;
     const basePutOi = "total_put_oi" in firstPoint ? Number(firstPoint.total_put_oi ?? 0) : 0;
+    const indexPoints = indexData?.points ?? [];
 
     return chartData.map((point, index) => {
       const previousPoint = index > 0 ? chartData[index - 1] : null;
@@ -148,6 +189,10 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
       const rangePutChange = roundToTwo(totalPutOi - basePutOi);
       const adjustedRangeCall = rangeCallChange <= 0 ? 1 : rangeCallChange;
       const adjustedRangePut = rangePutChange < 0 ? 1 : rangePutChange;
+      const pcr = totalCallOi ? roundToFour(totalPutOi / totalCallOi) : 0;
+      const rangeDeltaPcr = index === 0 ? 0 : clipDeltaPcr(roundToFour(Math.abs(adjustedRangePut / adjustedRangeCall)));
+      const indexLtp = findIndexPointAtOrBefore(indexPoints, point.timestamp)?.spot_ltp ?? null;
+      const previousIndexLtp = previousPoint ? (findIndexPointAtOrBefore(indexPoints, previousPoint.timestamp)?.spot_ltp ?? null) : null;
 
       return {
         timestamp: point.timestamp,
@@ -157,11 +202,18 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
         range_put_change: rangePutChange,
         previous_call_change: roundToTwo(totalCallOi - previousCallOi),
         previous_put_change: roundToTwo(totalPutOi - previousPutOi),
-        pcr: totalCallOi ? roundToFour(totalPutOi / totalCallOi) : 0,
-        range_delta_pcr: index === 0 ? 0 : clipDeltaPcr(roundToFour(Math.abs(adjustedRangePut / adjustedRangeCall)))
+        pcr,
+        previous_pcr: previousPoint ? Number(previousPoint.pcr ?? 0) : null,
+        range_delta_pcr: rangeDeltaPcr,
+        previous_range_delta_pcr: index > 0 ? null : null,
+        index_ltp: indexLtp,
+        previous_index_ltp: previousIndexLtp
       };
-    });
-  }, [scopedData]);
+    }).map((row, index, rows) => ({
+      ...row,
+      previous_range_delta_pcr: index > 0 ? rows[index - 1].range_delta_pcr : null
+    }));
+  }, [scopedData, indexData]);
 
   const subgroupHeat = useMemo(() => {
     const rows = subgroupData?.rows ?? [];
@@ -183,7 +235,7 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
           <p className="text-xs text-slate-400">Real scoped values used for the cumulative delta PCR calculation.</p>
         </div>
         <div className="overflow-x-auto">
-          <table className="min-w-[1300px] text-sm">
+          <table className="min-w-[1450px] text-sm">
             <thead>
               <tr className="border-b border-white/10 text-left text-slate-400">
                 <th className="px-3 py-3 font-medium">Time</th>
@@ -195,6 +247,7 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
                 <th className="px-3 py-3 font-medium">Delta Put Vs Prev</th>
                 <th className="px-3 py-3 font-medium">PCR</th>
                 <th className="px-3 py-3 font-medium">Delta PCR</th>
+                <th className="px-3 py-3 font-medium">{indexData?.underlying ?? underlying ?? "NIFTY"} Index</th>
               </tr>
             </thead>
             <tbody>
@@ -207,8 +260,11 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
                   <td className={`px-3 py-3 ${row.range_put_change >= 0 ? "text-slate-200" : "text-rose-300"}`}>{formatSignedCompact(row.range_put_change)}</td>
                   <td className={`px-3 py-3 ${callVsPreviousClass(row.previous_call_change)}`}>{formatSignedCompact(row.previous_call_change)}</td>
                   <td className={`px-3 py-3 ${putVsPreviousClass(row.previous_put_change)}`}>{formatSignedCompact(row.previous_put_change)}</td>
-                  <td className="px-3 py-3 font-medium text-slate-100">{formatFixed(row.pcr, 4)}</td>
-                  <td className="px-3 py-3 font-medium text-white">{formatFixed(row.range_delta_pcr, 4)}</td>
+                  <td className={`px-3 py-3 font-medium ${compareWithPreviousClass(row.pcr, row.previous_pcr)}`}>{formatFixed(row.pcr, 4)}</td>
+                  <td className={`px-3 py-3 font-medium ${compareWithPreviousClass(row.range_delta_pcr, row.previous_range_delta_pcr)}`}>{formatFixed(row.range_delta_pcr, 4)}</td>
+                  <td className={`px-3 py-3 font-medium ${compareWithPreviousClass(row.index_ltp, row.previous_index_ltp)}`}>
+                    {row.index_ltp == null ? "--" : formatFixed(row.index_ltp, 2)}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -401,6 +457,40 @@ function putVsPreviousClass(value: number) {
     return "text-rose-300";
   }
   return "text-slate-200";
+}
+
+function compareWithPreviousClass(value: number | null, previousValue: number | null) {
+  if (value == null || previousValue == null) {
+    return "text-slate-100";
+  }
+  if (value > previousValue) {
+    return "text-emerald-300";
+  }
+  if (value < previousValue) {
+    return "text-rose-300";
+  }
+  return "text-slate-100";
+}
+
+function findIndexPointAtOrBefore(points: PCRIndexHistoryResponse["points"], timestamp: string) {
+  const targetTime = new Date(timestamp).getTime();
+  if (!Number.isFinite(targetTime)) {
+    return null;
+  }
+
+  let matchedPoint: PCRIndexHistoryResponse["points"][number] | null = null;
+  for (const point of points) {
+    const pointTime = new Date(point.timestamp).getTime();
+    if (!Number.isFinite(pointTime)) {
+      continue;
+    }
+    if (pointTime <= targetTime) {
+      matchedPoint = point;
+    } else {
+      break;
+    }
+  }
+  return matchedPoint;
 }
 
 function isStrikeMode(value: unknown): value is StrikeMode {
