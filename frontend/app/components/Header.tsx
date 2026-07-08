@@ -19,8 +19,7 @@ type HeaderProps = {
 };
 
 const NAV_ITEMS = [
-  { href: "/", label: "Dashboard" },
-  { href: "/simulator", label: "Simulator" }
+  { href: "/", label: "Dashboard" }
 ] satisfies { href: Route; label: string }[];
 
 export function Header({

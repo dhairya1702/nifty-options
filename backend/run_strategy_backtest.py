@@ -1,0 +1,479 @@
+from __future__ import annotations
+
+import argparse
+import math
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, time
+from statistics import mean
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from local_db import index_history_filtered, init_db, strategy_backtest_rows
+from zerodha import LOT_SIZES
+
+
+IST = ZoneInfo("Asia/Kolkata")
+ENTRY_START = time(10, 0)
+ENTRY_CUTOFF = time(14, 45)
+SQUARE_OFF = time(15, 20)
+TARGET_PCT = 0.50
+STOP_LOSS_PCT = 0.20
+SLIPPAGE_PCT = 0.01
+SCORE_THRESHOLD = 70.0
+CONFIRMATION_BARS = 2
+STRIKE_STEPS = {"NIFTY": 50, "BANKNIFTY": 100}
+
+
+@dataclass
+class Trade:
+    entry_timestamp: str
+    exit_timestamp: str
+    side: str
+    strike_price: float
+    quantity: int
+    entry_price: float
+    exit_price: float
+    gross_pnl: float
+    costs: float
+    net_pnl: float
+    pnl_pct: float
+    exit_reason: str
+    entry_score: float
+    exit_score: float
+
+
+@dataclass
+class Position:
+    entry_timestamp: str
+    side: str
+    strike_price: float
+    quantity: int
+    entry_ltp: float
+    entry_price: float
+    entry_cost: float
+    entry_score: float
+
+
+def _parse_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=IST)
+    return parsed.astimezone(IST)
+
+
+def _format_timestamp(value: str) -> str:
+    return _parse_timestamp(value).strftime("%Y-%m-%d %H:%M")
+
+
+def _trading_day(value: str) -> str:
+    return _parse_timestamp(value).date().isoformat()
+
+
+def _in_entry_window(value: str) -> bool:
+    current_time = _parse_timestamp(value).time()
+    return ENTRY_START <= current_time <= ENTRY_CUTOFF
+
+
+def _is_square_off_time(value: str) -> bool:
+    return _parse_timestamp(value).time() >= SQUARE_OFF
+
+
+def _round_to_step(value: float, step: int) -> float:
+    return float(round(value / step) * step)
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        if value is None:
+            return 0.0
+        number = float(value)
+        return number if math.isfinite(number) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _option_key(row: dict[str, Any]) -> tuple[float, str]:
+    return (float(row["strike_price"]), str(row["option_type"]))
+
+
+def _build_snapshots(rows: list[dict[str, Any]]) -> dict[str, dict[tuple[float, str], dict[str, Any]]]:
+    snapshots: dict[str, dict[tuple[float, str], dict[str, Any]]] = defaultdict(dict)
+    for row in rows:
+        normalized = dict(row)
+        normalized["strike_price"] = float(row["strike_price"])
+        normalized["oi"] = _safe_float(row.get("oi"))
+        normalized["ltp"] = _safe_float(row.get("ltp"))
+        normalized["volume"] = _safe_float(row.get("volume"))
+        snapshots[str(row["timestamp"])][_option_key(normalized)] = normalized
+    return dict(snapshots)
+
+
+def _spot_by_timestamp(underlying: str, from_timestamp: str | None, to_timestamp: str | None) -> dict[str, float]:
+    points = index_history_filtered(underlying, from_timestamp=from_timestamp, to_timestamp=to_timestamp)
+    return {str(point["timestamp"]): _safe_float(point.get("spot_ltp")) for point in points}
+
+
+def _nearest_spot(timestamp: str, ordered_spots: list[tuple[str, float]], cursor: int) -> tuple[float | None, int]:
+    while cursor + 1 < len(ordered_spots) and _parse_timestamp(ordered_spots[cursor + 1][0]) <= _parse_timestamp(timestamp):
+        cursor += 1
+    if cursor >= 0:
+        return ordered_spots[cursor][1], cursor
+    return None, cursor
+
+
+def _fallback_atm_strike(snapshot: dict[tuple[float, str], dict[str, Any]], step: int) -> float | None:
+    strikes = sorted({strike for strike, _ in snapshot.keys()})
+    if not strikes:
+        return None
+    pairs: list[tuple[float, float]] = []
+    for strike in strikes:
+        call_ltp = snapshot.get((strike, "CE"), {}).get("ltp")
+        put_ltp = snapshot.get((strike, "PE"), {}).get("ltp")
+        if call_ltp is not None and put_ltp is not None:
+            pairs.append((abs(_safe_float(call_ltp) - _safe_float(put_ltp)), strike))
+    if pairs:
+        return min(pairs)[1]
+    middle = strikes[len(strikes) // 2]
+    return _round_to_step(middle, step)
+
+
+def _fee_estimate(turnover: float) -> float:
+    brokerage = min(20.0, turnover * 0.0003)
+    stt = turnover * 0.000625
+    exchange = turnover * 0.00053
+    sebi = turnover * 0.000001
+    gst = 0.18 * (brokerage + exchange + sebi)
+    stamp = turnover * 0.00003
+    return brokerage + stt + exchange + sebi + gst + stamp
+
+
+def _leg_delta(
+    snapshot: dict[tuple[float, str], dict[str, Any]],
+    previous: dict[tuple[float, str], dict[str, Any]] | None,
+    strike: float,
+    option_type: str,
+    field: str,
+) -> float:
+    current_value = _safe_float(snapshot.get((strike, option_type), {}).get(field))
+    previous_value = _safe_float((previous or {}).get((strike, option_type), {}).get(field))
+    return current_value - previous_value
+
+
+def _range_delta_pcr(
+    snapshot: dict[tuple[float, str], dict[str, Any]],
+    previous: dict[tuple[float, str], dict[str, Any]] | None,
+    atm_strike: float,
+    step: int,
+) -> float:
+    strikes = [atm_strike - step, atm_strike, atm_strike + step]
+    call_delta = sum(_leg_delta(snapshot, previous, strike, "CE", "oi") for strike in strikes)
+    put_delta = sum(_leg_delta(snapshot, previous, strike, "PE", "oi") for strike in strikes)
+    if call_delta <= 0:
+        return 0.0
+    return put_delta / call_delta
+
+
+def _score_signal(
+    timestamp: str,
+    snapshot: dict[tuple[float, str], dict[str, Any]],
+    previous: dict[tuple[float, str], dict[str, Any]] | None,
+    previous_spot: float | None,
+    spot: float | None,
+    atm_strike: float,
+    step: int,
+) -> dict[str, Any]:
+    ce = snapshot.get((atm_strike, "CE"))
+    pe = snapshot.get((atm_strike, "PE"))
+    if not ce or not pe or ce["ltp"] <= 0 or pe["ltp"] <= 0:
+        return {
+            "timestamp": timestamp,
+            "action": "wait",
+            "score": 0.0,
+            "ce_score": 0.0,
+            "pe_score": 0.0,
+            "atm_strike": atm_strike,
+            "delta_pcr": 0.0,
+            "spot": spot,
+        }
+
+    call_oi_delta = _leg_delta(snapshot, previous, atm_strike, "CE", "oi")
+    put_oi_delta = _leg_delta(snapshot, previous, atm_strike, "PE", "oi")
+    call_ltp_delta = _leg_delta(snapshot, previous, atm_strike, "CE", "ltp")
+    put_ltp_delta = _leg_delta(snapshot, previous, atm_strike, "PE", "ltp")
+    call_volume_delta = _leg_delta(snapshot, previous, atm_strike, "CE", "volume")
+    put_volume_delta = _leg_delta(snapshot, previous, atm_strike, "PE", "volume")
+    delta_pcr = _range_delta_pcr(snapshot, previous, atm_strike, step)
+    spot_delta = (spot or 0.0) - (previous_spot or 0.0)
+
+    ce_score = 0.0
+    pe_score = 0.0
+
+    if call_oi_delta > 0:
+        ce_score += 18
+    if put_oi_delta < 0:
+        ce_score += 12
+    if put_oi_delta > 0:
+        pe_score += 18
+    if call_oi_delta < 0:
+        pe_score += 12
+
+    if delta_pcr >= 1.2:
+        ce_score += 20
+    elif delta_pcr <= 0.8 and delta_pcr > 0:
+        pe_score += 20
+    else:
+        ce_score += 6
+        pe_score += 6
+
+    if call_ltp_delta > 0:
+        ce_score += 20
+    if put_ltp_delta > 0:
+        pe_score += 20
+
+    if spot_delta > 0:
+        ce_score += 15
+    elif spot_delta < 0:
+        pe_score += 15
+
+    if call_volume_delta > 0 and call_volume_delta >= put_volume_delta:
+        ce_score += 15
+    if put_volume_delta > 0 and put_volume_delta >= call_volume_delta:
+        pe_score += 15
+
+    action = "wait"
+    score = max(ce_score, pe_score)
+    if ce_score >= SCORE_THRESHOLD and ce_score > pe_score:
+        action = "CE"
+        score = ce_score
+    elif pe_score >= SCORE_THRESHOLD and pe_score > ce_score:
+        action = "PE"
+        score = pe_score
+
+    return {
+        "timestamp": timestamp,
+        "action": action,
+        "score": round(score, 2),
+        "ce_score": round(ce_score, 2),
+        "pe_score": round(pe_score, 2),
+        "atm_strike": atm_strike,
+        "delta_pcr": round(delta_pcr, 4),
+        "call_oi_delta": call_oi_delta,
+        "put_oi_delta": put_oi_delta,
+        "call_ltp_delta": call_ltp_delta,
+        "put_ltp_delta": put_ltp_delta,
+        "spot": spot,
+    }
+
+
+def _exit_trade(
+    position: Position,
+    timestamp: str,
+    exit_ltp: float,
+    exit_reason: str,
+    exit_score: float,
+) -> Trade:
+    exit_price = exit_ltp * (1.0 - SLIPPAGE_PCT)
+    gross_pnl = (exit_price - position.entry_price) * position.quantity
+    exit_cost = _fee_estimate(exit_price * position.quantity)
+    costs = position.entry_cost + exit_cost
+    net_pnl = gross_pnl - costs
+    pnl_pct = (exit_price - position.entry_price) / position.entry_price if position.entry_price else 0.0
+    return Trade(
+        entry_timestamp=position.entry_timestamp,
+        exit_timestamp=timestamp,
+        side=position.side,
+        strike_price=position.strike_price,
+        quantity=position.quantity,
+        entry_price=round(position.entry_price, 2),
+        exit_price=round(exit_price, 2),
+        gross_pnl=round(gross_pnl, 2),
+        costs=round(costs, 2),
+        net_pnl=round(net_pnl, 2),
+        pnl_pct=round(pnl_pct * 100, 2),
+        exit_reason=exit_reason,
+        entry_score=position.entry_score,
+        exit_score=exit_score,
+    )
+
+
+def run_backtest(args: argparse.Namespace) -> tuple[list[Trade], list[dict[str, Any]]]:
+    underlying = args.underlying.upper()
+    rows = strategy_backtest_rows(
+        underlying,
+        from_timestamp=args.from_timestamp,
+        to_timestamp=args.to_timestamp,
+        limit=args.limit,
+    )
+    snapshots = _build_snapshots(rows)
+    timestamps = sorted(snapshots.keys(), key=_parse_timestamp)
+    spot_map = _spot_by_timestamp(underlying, args.from_timestamp, args.to_timestamp)
+    ordered_spots = sorted(spot_map.items(), key=lambda item: _parse_timestamp(item[0]))
+    spot_cursor = -1
+    step = STRIKE_STEPS.get(underlying, 50)
+    lot_size = LOT_SIZES.get(underlying, 1)
+    quantity = lot_size * args.lots
+
+    trades: list[Trade] = []
+    signals: list[dict[str, Any]] = []
+    position: Position | None = None
+    previous_snapshot: dict[tuple[float, str], dict[str, Any]] | None = None
+    previous_spot: float | None = None
+    confirmation_side: str | None = None
+    confirmation_count = 0
+    current_day: str | None = None
+
+    for timestamp in timestamps:
+        day = _trading_day(timestamp)
+        if current_day != day:
+            current_day = day
+            confirmation_side = None
+            confirmation_count = 0
+            previous_snapshot = None
+            previous_spot = None
+
+        snapshot = snapshots[timestamp]
+        exact_spot = spot_map.get(timestamp)
+        spot, spot_cursor = _nearest_spot(timestamp, ordered_spots, spot_cursor)
+        spot = exact_spot or spot
+        atm_strike = _round_to_step(spot, step) if spot else _fallback_atm_strike(snapshot, step)
+        if atm_strike is None:
+            previous_snapshot = snapshot
+            previous_spot = spot
+            continue
+
+        signal = _score_signal(timestamp, snapshot, previous_snapshot, previous_spot, spot, atm_strike, step)
+        signals.append(signal)
+
+        if position:
+            current_leg = snapshot.get((position.strike_price, position.side))
+            current_ltp = _safe_float(current_leg.get("ltp")) if current_leg else 0.0
+            exit_reason = ""
+            if current_ltp > 0:
+                if current_ltp >= position.entry_ltp * (1.0 + TARGET_PCT):
+                    exit_reason = "target"
+                elif current_ltp <= position.entry_ltp * (1.0 - STOP_LOSS_PCT):
+                    exit_reason = "stop_loss"
+                elif signal["action"] != "wait" and signal["action"] != position.side and signal["score"] >= SCORE_THRESHOLD:
+                    exit_reason = "signal_flip"
+                elif _is_square_off_time(timestamp):
+                    exit_reason = "square_off"
+
+            if exit_reason and current_ltp > 0:
+                trades.append(_exit_trade(position, timestamp, current_ltp, exit_reason, float(signal["score"])))
+                position = None
+                confirmation_side = None
+                confirmation_count = 0
+
+        if not position and _in_entry_window(timestamp) and signal["action"] in {"CE", "PE"}:
+            if confirmation_side == signal["action"]:
+                confirmation_count += 1
+            else:
+                confirmation_side = str(signal["action"])
+                confirmation_count = 1
+
+            if confirmation_count >= CONFIRMATION_BARS:
+                entry_leg = snapshot.get((atm_strike, str(signal["action"])))
+                entry_ltp = _safe_float(entry_leg.get("ltp")) if entry_leg else 0.0
+                if entry_ltp > 0:
+                    entry_price = entry_ltp * (1.0 + SLIPPAGE_PCT)
+                    entry_cost = _fee_estimate(entry_price * quantity)
+                    position = Position(
+                        entry_timestamp=timestamp,
+                        side=str(signal["action"]),
+                        strike_price=atm_strike,
+                        quantity=quantity,
+                        entry_ltp=entry_ltp,
+                        entry_price=entry_price,
+                        entry_cost=entry_cost,
+                        entry_score=float(signal["score"]),
+                    )
+                    confirmation_side = None
+                    confirmation_count = 0
+        elif signal["action"] == "wait":
+            confirmation_side = None
+            confirmation_count = 0
+
+        previous_snapshot = snapshot
+        previous_spot = spot
+
+    if position and timestamps:
+        last_snapshot = snapshots[timestamps[-1]]
+        current_leg = last_snapshot.get((position.strike_price, position.side))
+        current_ltp = _safe_float(current_leg.get("ltp")) if current_leg else position.entry_ltp
+        trades.append(_exit_trade(position, timestamps[-1], current_ltp, "end_of_data", 0.0))
+
+    return trades, signals
+
+
+def _print_report(args: argparse.Namespace, trades: list[Trade], signals: list[dict[str, Any]]) -> None:
+    total_pnl = sum(trade.net_pnl for trade in trades)
+    wins = [trade for trade in trades if trade.net_pnl > 0]
+    losses = [trade for trade in trades if trade.net_pnl <= 0]
+    capital = float(args.capital)
+    win_rate = (len(wins) / len(trades) * 100) if trades else 0.0
+    return_pct = (total_pnl / capital * 100) if capital else 0.0
+
+    print("Strategy Backtest")
+    print(f"Underlying: {args.underlying.upper()}")
+    print(f"Rows tested: {len(signals)}")
+    print(f"Trades: {len(trades)} | Wins: {len(wins)} | Losses: {len(losses)} | Win rate: {win_rate:.2f}%")
+    print(f"Net PnL: {total_pnl:.2f} | Return on capital: {return_pct:.2f}%")
+    print(f"Avg win: {(mean([trade.net_pnl for trade in wins]) if wins else 0.0):.2f}")
+    print(f"Avg loss: {(mean([trade.net_pnl for trade in losses]) if losses else 0.0):.2f}")
+    print("")
+    print("Recent signals")
+    print("time              action score ce    pe    atm     dPCR")
+    for signal in signals[-10:]:
+        print(
+            f"{_format_timestamp(signal['timestamp']):16} "
+            f"{signal['action']:>6} "
+            f"{float(signal['score']):5.1f} "
+            f"{float(signal['ce_score']):5.1f} "
+            f"{float(signal['pe_score']):5.1f} "
+            f"{float(signal.get('atm_strike') or 0):7.0f} "
+            f"{float(signal.get('delta_pcr') or 0):5.2f}"
+        )
+
+    print("")
+    print("Trades")
+    if not trades:
+        print("No trades matched the configured rules.")
+        return
+    print("entry            exit             side strike qty entry exit  pnl    pnl% reason")
+    for trade in trades[-args.show_trades :]:
+        print(
+            f"{_format_timestamp(trade.entry_timestamp):16} "
+            f"{_format_timestamp(trade.exit_timestamp):16} "
+            f"{trade.side:>2} "
+            f"{trade.strike_price:6.0f} "
+            f"{trade.quantity:3d} "
+            f"{trade.entry_price:5.1f} "
+            f"{trade.exit_price:5.1f} "
+            f"{trade.net_pnl:7.2f} "
+            f"{trade.pnl_pct:6.2f} "
+            f"{trade.exit_reason}"
+        )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the local intraday ATM option strategy backtest.")
+    parser.add_argument("--underlying", choices=["NIFTY", "BANKNIFTY"], required=True)
+    parser.add_argument("--capital", type=float, default=100000.0)
+    parser.add_argument("--lots", type=int, default=1)
+    parser.add_argument("--from", dest="from_timestamp", default=None, help="Inclusive ISO timestamp lower bound.")
+    parser.add_argument("--to", dest="to_timestamp", default=None, help="Inclusive ISO timestamp upper bound.")
+    parser.add_argument("--limit", type=int, default=None, help="Use only the latest N snapshot timestamps.")
+    parser.add_argument("--show-trades", type=int, default=50)
+    return parser.parse_args()
+
+
+def main() -> None:
+    init_db()
+    args = parse_args()
+    trades, signals = run_backtest(args)
+    _print_report(args, trades, signals)
+
+
+if __name__ == "__main__":
+    main()

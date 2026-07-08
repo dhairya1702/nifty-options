@@ -42,6 +42,7 @@ def init_db() -> None:
               option_type text not null check (option_type in ('CE', 'PE')),
               oi real not null,
               ltp real not null,
+              volume real,
               unique (underlying, timestamp, expiry, strike_price, option_type)
             );
 
@@ -83,6 +84,12 @@ def init_db() -> None:
             );
             """
         )
+        existing_columns = {
+            str(row["name"])
+            for row in connection.execute("pragma table_info(option_snapshots)").fetchall()
+        }
+        if "volume" not in existing_columns:
+            connection.execute("alter table option_snapshots add column volume real")
 
 
 def _rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
@@ -93,25 +100,27 @@ def upsert_option_snapshots(rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     init_db()
+    normalized_rows = [{**row, "volume": row.get("volume")} for row in rows]
     with _connect() as connection:
         connection.executemany(
             """
             insert into option_snapshots (
               timestamp, underlying, expiry, tradingsymbol, instrument_token,
-              strike_price, option_type, oi, ltp
+              strike_price, option_type, oi, ltp, volume
             )
             values (
               :timestamp, :underlying, :expiry, :tradingsymbol, :instrument_token,
-              :strike_price, :option_type, :oi, :ltp
+              :strike_price, :option_type, :oi, :ltp, :volume
             )
             on conflict (underlying, timestamp, expiry, strike_price, option_type)
             do update set
               tradingsymbol = excluded.tradingsymbol,
               instrument_token = excluded.instrument_token,
               oi = excluded.oi,
-              ltp = excluded.ltp
+              ltp = excluded.ltp,
+              volume = excluded.volume
             """,
-            rows,
+            normalized_rows,
         )
 
 
@@ -424,13 +433,75 @@ def snapshot_rows(underlying: str, timestamp: str | None) -> list[dict[str, Any]
     with _connect() as connection:
         rows = connection.execute(
             """
-            select strike_price, option_type, oi, ltp
+            select strike_price, option_type, oi, ltp, volume
             from option_snapshots
             where underlying = ? and timestamp = ?
             order by strike_price
             """,
             (underlying, timestamp),
         ).fetchall()
+    return _rows_to_dicts(rows)
+
+
+def strategy_backtest_rows(
+    underlying: str,
+    *,
+    from_timestamp: str | None = None,
+    to_timestamp: str | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    init_db()
+    query = """
+        select
+          timestamp,
+          expiry,
+          strike_price,
+          option_type,
+          oi,
+          ltp,
+          volume
+        from option_snapshots
+        where underlying = ?
+    """
+    params: list[Any] = [underlying]
+
+    if from_timestamp:
+        query += " and datetime(timestamp) >= datetime(?)"
+        params.append(from_timestamp)
+    if to_timestamp:
+        query += " and datetime(timestamp) <= datetime(?)"
+        params.append(to_timestamp)
+
+    if limit is not None:
+        limit_query = """
+                select distinct timestamp
+                from option_snapshots
+                where underlying = ?
+        """
+        limit_params: list[Any] = [underlying]
+        if from_timestamp:
+            limit_query += " and datetime(timestamp) >= datetime(?)"
+            limit_params.append(from_timestamp)
+        if to_timestamp:
+            limit_query += " and datetime(timestamp) <= datetime(?)"
+            limit_params.append(to_timestamp)
+        limit_query += " order by datetime(timestamp) desc limit ?"
+        limit_params.append(limit)
+
+        query += """
+            and timestamp in (
+              select timestamp
+              from (
+        """ + limit_query + """
+              )
+            )
+        """
+        params.extend(limit_params)
+
+    query += " order by datetime(timestamp), strike_price, option_type"
+
+    with _connect() as connection:
+        rows = connection.execute(query, params).fetchall()
     return _rows_to_dicts(rows)
 
 

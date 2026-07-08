@@ -126,6 +126,7 @@ class OptionDataScheduler:
                     "option_type": row["option_type"],
                     "oi": row["oi"],
                     "ltp": row["ltp"],
+                    "volume": row.get("volume"),
                 }
                 for row in option_chain
             ]

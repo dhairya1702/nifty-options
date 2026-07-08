@@ -53,6 +53,7 @@ def _build_history_rows(underlying: str, from_dt: datetime, to_dt: datetime) -> 
                         "option_type": str(instrument["instrument_type"]),
                         "oi": float(candle.get("oi") or 0.0),
                         "ltp": float(candle.get("close") or 0.0),
+                        "volume": float(candle.get("volume") or 0.0),
                     }
                 )
 
