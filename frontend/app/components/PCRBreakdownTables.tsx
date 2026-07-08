@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 
 import {
   fetchPCRIndexHistory,
   fetchPCRScopedHistory,
   fetchPCRScopedSubgroups,
+  fetchPCRScopedStrikeSnapshots,
   type PCRIndexHistoryResponse,
   type PCRScopedHistoryResponse,
+  type PCRScopedStrikeSnapshotsResponse,
   type PCRScopedSubgroupResponse
 } from "@/lib/api";
 
@@ -27,6 +29,7 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
   const [rangeDisplayInterval, setRangeDisplayInterval] = useState<RangeDisplayInterval>("raw");
   const [indexData, setIndexData] = useState<PCRIndexHistoryResponse | null>(null);
   const [scopedData, setScopedData] = useState<PCRScopedHistoryResponse | null>(null);
+  const [strikeSignalData, setStrikeSignalData] = useState<PCRScopedStrikeSnapshotsResponse | null>(null);
   const [subgroupData, setSubgroupData] = useState<PCRScopedSubgroupResponse | null>(null);
   const [subgroupError, setSubgroupError] = useState<string | null>(null);
   const [subgroupBusy, setSubgroupBusy] = useState(false);
@@ -80,6 +83,53 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
     }
 
     loadScopedHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [preferencesReady, prefs, refreshToken]);
+
+  useEffect(() => {
+    if (!preferencesReady) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadStrikeSignals() {
+      try {
+        if (prefs.strikeMode === "full") {
+          setStrikeSignalData(null);
+          return;
+        }
+
+        const response = await fetchPCRScopedStrikeSnapshots({
+          strikeMode: prefs.strikeMode,
+          timeMode: prefs.timeMode,
+          widthPoints: prefs.strikeMode === "atm" ? prefs.atmWidth : prefs.strikeMode === "custom_atm" ? prefs.customAtmWidth : undefined,
+          customAtm: prefs.strikeMode === "custom_atm" ? Number(prefs.customAtm) : undefined,
+          strikeMin: prefs.strikeMode === "custom" ? Number(prefs.strikeMin) : undefined,
+          strikeMax: prefs.strikeMode === "custom" ? Number(prefs.strikeMax) : undefined,
+          customDate: prefs.timeMode === "custom_date" ? prefs.customDate : undefined,
+          fromTimestamp: prefs.timeMode === "custom_range" ? prefs.fromTimestamp : undefined,
+          toTimestamp: prefs.timeMode === "custom_range" ? prefs.toTimestamp : undefined,
+          limit: 128
+        });
+        if (!cancelled) {
+          setStrikeSignalData(response);
+        }
+      } catch {
+        if (!cancelled) {
+          setStrikeSignalData(null);
+        }
+      }
+    }
+
+    if (!isValidPreferences(prefs)) {
+      setStrikeSignalData(null);
+      return;
+    }
+
+    loadStrikeSignals();
     return () => {
       cancelled = true;
     };
@@ -226,6 +276,11 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
     return { maxAbsDeltaCall, maxAbsDeltaPut, maxDeltaPcr };
   }, [subgroupData]);
 
+  const strikeSignalTable = useMemo(
+    () => buildStrikeSignalTable(strikeSignalData, rangeDisplayInterval),
+    [strikeSignalData, rangeDisplayInterval]
+  );
+
   if (!rangeAnchorPcrData.length && !subgroupData?.rows?.length) {
     return null;
   }
@@ -294,6 +349,52 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
           </table>
         </div>
       </div>
+      {strikeSignalTable ? (
+        <div>
+          <div className="mb-3">
+            <p className="text-sm font-semibold text-white">Strike-wise Delta PCR Signal</p>
+            <p className="text-xs text-slate-400">
+              Last {strikeSignalTable.timestamps.length} sampled timestamps using {strikeSignalData?.strike_step ?? "--"}-point strikes in the selected range.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-[1100px] text-sm">
+              <thead>
+                <tr className="border-b border-white/10 text-left text-slate-400">
+                  <th className="px-3 py-3 font-medium">Strike</th>
+                  {strikeSignalTable.timestamps.map((timestamp) => (
+                    <Fragment key={`strike-signal-header-${timestamp}`}>
+                      <th className="px-3 py-3 font-medium">
+                        {formatChartTime(timestamp)} Delta PCR
+                      </th>
+                      <th className="px-3 py-3 font-medium">
+                        {formatChartTime(timestamp)} Rec
+                      </th>
+                    </Fragment>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {strikeSignalTable.rows.map((row) => (
+                  <tr key={`strike-signal-${row.strike_price}`} className="border-b border-white/5">
+                    <td className="px-3 py-3 font-medium text-white">{Math.round(row.strike_price)}</td>
+                    {row.signals.map((signal) => (
+                      <Fragment key={`strike-signal-cell-${row.strike_price}-${signal.timestamp}`}>
+                        <td className="px-3 py-3 font-medium text-slate-100">
+                          {formatFixed(signal.delta_pcr, 4)}
+                        </td>
+                        <td className={`px-3 py-3 font-medium ${recommendationClass(signal.recommendation)}`}>
+                          {signal.recommendation}
+                        </td>
+                      </Fragment>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
       <div>
         <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -566,6 +667,74 @@ function sampleRowsByInterval<T extends { timestamp: string }>(rows: T[], interv
   }
 
   return sampledRows;
+}
+
+function buildStrikeSignalTable(data: PCRScopedStrikeSnapshotsResponse | null, interval: RangeDisplayInterval) {
+  if (!data) {
+    return null;
+  }
+
+  const sampledPoints = sampleRowsByInterval(data.points, interval);
+  if (sampledPoints.length === 0) {
+    return null;
+  }
+
+  const baselinePoint = sampledPoints[0];
+  const displayPoints = sampledPoints.slice(-5);
+  const baselineByStrike = new Map(baselinePoint.strikes.map((row) => [row.strike_price, row]));
+  const strikeSet = new Set<number>();
+  for (const point of displayPoints) {
+    for (const row of point.strikes) {
+      strikeSet.add(row.strike_price);
+    }
+  }
+
+  const rows = Array.from(strikeSet)
+    .sort((left, right) => left - right)
+    .map((strikePrice) => {
+      const baseline = baselineByStrike.get(strikePrice) ?? { strike_price: strikePrice, call_oi: 0, put_oi: 0 };
+      return {
+        strike_price: strikePrice,
+        signals: displayPoints.map((point) => {
+          const current = point.strikes.find((row) => row.strike_price === strikePrice) ?? { strike_price: strikePrice, call_oi: 0, put_oi: 0 };
+          const deltaCall = roundToTwo(current.call_oi - baseline.call_oi);
+          const deltaPut = roundToTwo(current.put_oi - baseline.put_oi);
+          const adjustedCall = deltaCall <= 0 ? 1 : deltaCall;
+          const adjustedPut = deltaPut < 0 ? 1 : deltaPut;
+          const deltaPcr = roundToFour(Math.abs(adjustedPut / adjustedCall));
+          return {
+            timestamp: point.timestamp,
+            delta_pcr: deltaPcr,
+            recommendation: recommendationForDeltaPcr(deltaPcr)
+          };
+        })
+      };
+    });
+
+  return {
+    timestamps: displayPoints.map((point) => point.timestamp),
+    rows
+  };
+}
+
+function recommendationForDeltaPcr(value: number) {
+  if (value < 0.8) {
+    return "Buy Put";
+  }
+  if (value < 1.2) {
+    return "Wait";
+  }
+  return "Buy Call";
+}
+
+function recommendationClass(recommendation: string) {
+  if (recommendation === "Buy Call") {
+    return "text-emerald-300";
+  }
+  if (recommendation === "Buy Put") {
+    return "text-rose-300";
+  }
+  return "text-slate-200";
 }
 
 function isStrikeMode(value: unknown): value is StrikeMode {

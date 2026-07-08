@@ -111,6 +111,34 @@ export type PCRScopedSubgroupResponse = {
   rows: PCRScopedSubgroupRow[];
 };
 
+export type PCRScopedStrikeSnapshotRow = {
+  strike_price: number;
+  call_oi: number;
+  put_oi: number;
+};
+
+export type PCRScopedStrikeSnapshotPoint = {
+  timestamp: string;
+  strikes: PCRScopedStrikeSnapshotRow[];
+};
+
+export type PCRScopedStrikeSnapshotsResponse = {
+  underlying: string;
+  strike_mode: "atm" | "custom_atm" | "custom";
+  time_mode: "all" | "today" | "previous_day" | "last_2_days" | "custom_date" | "custom_range";
+  reference_strike: number | null;
+  atm_strike: number | null;
+  custom_atm: number | null;
+  spot_ltp: number | null;
+  strike_min: number | null;
+  strike_max: number | null;
+  width_points: number | null;
+  strike_step: number;
+  from_timestamp: string | null;
+  to_timestamp: string | null;
+  points: PCRScopedStrikeSnapshotPoint[];
+};
+
 export type OIStrikeRow = {
   strike_price: number;
   call_oi: number;
@@ -530,6 +558,53 @@ export const fetchPCRIndexHistory = (params: {
   }
 
   return apiRequest<PCRIndexHistoryResponse>(`/pcr/index-history?${search.toString()}`);
+};
+
+export const fetchPCRScopedStrikeSnapshots = (params: {
+  limit?: number;
+  strikeMode: "atm" | "custom_atm" | "custom";
+  timeMode: "all" | "today" | "previous_day" | "last_2_days" | "custom_date" | "custom_range";
+  widthPoints?: number;
+  customAtm?: number;
+  strikeMin?: number;
+  strikeMax?: number;
+  customDate?: string;
+  fromTimestamp?: string;
+  toTimestamp?: string;
+}) => {
+  const search = new URLSearchParams({
+    limit: String(params.limit ?? 128),
+    strike_mode: params.strikeMode,
+    time_mode: params.timeMode
+  });
+
+  if (params.strikeMode === "atm" || params.strikeMode === "custom_atm") {
+    search.set("width_points", String(params.widthPoints ?? 500));
+    if (params.strikeMode === "custom_atm" && params.customAtm != null) {
+      search.set("custom_atm", String(params.customAtm));
+    }
+  } else if (params.strikeMode === "custom") {
+    if (params.strikeMin != null) {
+      search.set("strike_min", String(params.strikeMin));
+    }
+    if (params.strikeMax != null) {
+      search.set("strike_max", String(params.strikeMax));
+    }
+  }
+
+  if (params.timeMode === "custom_date" && params.customDate) {
+    search.set("custom_date", params.customDate);
+  }
+  if (params.timeMode === "custom_range") {
+    if (params.fromTimestamp) {
+      search.set("from_timestamp", params.fromTimestamp);
+    }
+    if (params.toTimestamp) {
+      search.set("to_timestamp", params.toTimestamp);
+    }
+  }
+
+  return apiRequest<PCRScopedStrikeSnapshotsResponse>(`/pcr/strikes/scoped?${search.toString()}`);
 };
 
 export const fetchPCRScopedSubgroups = (params: {

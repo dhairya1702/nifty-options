@@ -203,6 +203,20 @@ def _empty_subgroup_response(
     }
 
 
+def _group_strike_snapshot_rows(rows: list[dict[str, float]], strike_step: int) -> dict[float, dict[str, float]]:
+    grouped: dict[float, dict[str, float]] = {}
+    for row in rows:
+        strike_price = float(row["strike_price"])
+        if strike_step > 0 and round(strike_price) % strike_step != 0:
+            continue
+        bucket = grouped.setdefault(strike_price, {"strike_price": strike_price, "call_oi": 0.0, "put_oi": 0.0})
+        if row["option_type"] == "CE":
+            bucket["call_oi"] = float(bucket["call_oi"]) + float(row["oi"] or 0.0)
+        else:
+            bucket["put_oi"] = float(bucket["put_oi"]) + float(row["oi"] or 0.0)
+    return grouped
+
+
 @router.get("/history/range")
 def get_pcr_history_range(
     limit: int = Query(50, ge=1, le=500),
@@ -368,6 +382,88 @@ def get_index_history(
     return {
         "underlying": option_scheduler.underlying,
         "time_mode": normalized_time_mode,
+        "from_timestamp": effective_from,
+        "to_timestamp": effective_to,
+        "points": points,
+    }
+
+
+@router.get("/strikes/scoped")
+def get_pcr_strikes_scoped(
+    limit: int = Query(128, ge=1, le=500),
+    strike_mode: str = Query("atm"),
+    width_points: int = Query(500, ge=50, le=5000),
+    custom_atm: float | None = Query(default=None),
+    strike_min: float | None = Query(default=None),
+    strike_max: float | None = Query(default=None),
+    time_mode: str = Query("all"),
+    custom_date: str | None = Query(default=None),
+    from_timestamp: str | None = Query(default=None),
+    to_timestamp: str | None = Query(default=None),
+) -> dict:
+    normalized_strike_mode = strike_mode.lower()
+    if normalized_strike_mode == "full":
+        raise HTTPException(status_code=400, detail="strike-level signals are available only for ATM, custom_atm, and custom modes")
+
+    normalized_time_mode = time_mode.lower()
+    effective_from, effective_to = _resolve_time_window(normalized_time_mode, custom_date, from_timestamp, to_timestamp)
+
+    latest_grouped, _, spot = get_latest_snapshot_groups()
+    latest_rows = sorted(latest_grouped.values(), key=lambda row: row["strike_price"])
+    reference_strike = get_reference_strike(latest_rows, spot)
+    effective_min, effective_max, effective_anchor, atm_strike = _resolve_strike_scope(
+        normalized_strike_mode,
+        width_points,
+        custom_atm,
+        strike_min,
+        strike_max,
+        latest_rows,
+        spot,
+    )
+
+    timestamps = snapshot_timestamps_filtered(
+        option_scheduler.underlying,
+        from_timestamp=effective_from,
+        to_timestamp=effective_to,
+    )
+    if limit is not None:
+        timestamps = timestamps[-limit:]
+
+    strike_step = 100 if option_scheduler.underlying.upper() == "BANKNIFTY" else 50
+    points = []
+    for timestamp in timestamps:
+        scoped_rows = _filter_snapshot_rows_to_scope(
+            snapshot_rows(option_scheduler.underlying, timestamp),
+            effective_min,
+            effective_max,
+        )
+        grouped = _group_strike_snapshot_rows(scoped_rows, strike_step)
+        points.append(
+            {
+                "timestamp": timestamp,
+                "strikes": [
+                    {
+                        "strike_price": strike_price,
+                        "call_oi": values["call_oi"],
+                        "put_oi": values["put_oi"],
+                    }
+                    for strike_price, values in sorted(grouped.items())
+                ],
+            }
+        )
+
+    return {
+        "underlying": option_scheduler.underlying,
+        "strike_mode": normalized_strike_mode,
+        "time_mode": normalized_time_mode,
+        "reference_strike": reference_strike,
+        "atm_strike": atm_strike,
+        "custom_atm": effective_anchor,
+        "spot_ltp": spot,
+        "strike_min": effective_min,
+        "strike_max": effective_max,
+        "width_points": width_points if normalized_strike_mode in {"atm", "custom_atm"} else None,
+        "strike_step": strike_step,
         "from_timestamp": effective_from,
         "to_timestamp": effective_to,
         "points": points,
