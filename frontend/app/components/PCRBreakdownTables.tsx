@@ -18,11 +18,13 @@ type PCRBreakdownTablesProps = {
 
 type StrikeMode = "full" | "atm" | "custom_atm" | "custom";
 type TimeMode = "all" | "today" | "previous_day" | "last_2_days" | "custom_date" | "custom_range";
+type RangeDisplayInterval = "raw" | "10" | "15" | "30" | "60";
 
 const STORAGE_KEY = "options-dashboard:pcr-chart-preferences";
 
 export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTablesProps) {
   const [bucketSize, setBucketSize] = useState(200);
+  const [rangeDisplayInterval, setRangeDisplayInterval] = useState<RangeDisplayInterval>("raw");
   const [indexData, setIndexData] = useState<PCRIndexHistoryResponse | null>(null);
   const [scopedData, setScopedData] = useState<PCRScopedHistoryResponse | null>(null);
   const [subgroupData, setSubgroupData] = useState<PCRScopedSubgroupResponse | null>(null);
@@ -37,6 +39,7 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
     const next = readStoredPreferences(storageScope);
     setPrefs(next);
     setBucketSize(next.bucketSize);
+    setRangeDisplayInterval(next.rangeDisplayInterval);
     setPreferencesReady(true);
   }, [storageScope, refreshToken]);
 
@@ -169,7 +172,7 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
   }, [bucketSize, preferencesReady, prefs, refreshToken]);
 
   const rangeAnchorPcrData = useMemo(() => {
-    const chartData = scopedData?.points ?? [];
+    const chartData = sampleRowsByInterval(scopedData?.points ?? [], rangeDisplayInterval);
     if (chartData.length === 0) {
       return [];
     }
@@ -213,7 +216,7 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
       ...row,
       previous_range_delta_pcr: index > 0 ? rows[index - 1].range_delta_pcr : null
     }));
-  }, [scopedData, indexData]);
+  }, [scopedData, indexData, rangeDisplayInterval]);
 
   const subgroupHeat = useMemo(() => {
     const rows = subgroupData?.rows ?? [];
@@ -230,9 +233,29 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
   return (
     <div className="space-y-8">
       <div>
-        <div className="mb-3">
-          <p className="text-sm font-semibold text-white">Range Baseline Breakdown</p>
-          <p className="text-xs text-slate-400">Real scoped values used for the cumulative delta PCR calculation.</p>
+        <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-white">Range Baseline Breakdown</p>
+            <p className="text-xs text-slate-400">Real scoped values used for the cumulative delta PCR calculation.</p>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-300">
+            Display interval
+            <select
+              value={rangeDisplayInterval}
+              onChange={(event) => {
+                const nextInterval = asRangeDisplayInterval(event.target.value);
+                setRangeDisplayInterval(nextInterval);
+                writeStoredPreferences(storageScope, { ...prefs, bucketSize, rangeDisplayInterval: nextInterval });
+              }}
+              className="rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-white outline-none"
+            >
+              <option value="raw">Raw</option>
+              <option value="10">10 min</option>
+              <option value="15">15 min</option>
+              <option value="30">30 min</option>
+              <option value="60">1 hr</option>
+            </select>
+          </label>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-[1450px] text-sm">
@@ -366,6 +389,7 @@ type StoredPreferences = {
   fromTimestamp: string;
   toTimestamp: string;
   bucketSize: number;
+  rangeDisplayInterval: RangeDisplayInterval;
 };
 
 function defaultPreferences(): StoredPreferences {
@@ -382,7 +406,8 @@ function defaultPreferences(): StoredPreferences {
     customDate: "",
     fromTimestamp: "",
     toTimestamp: "",
-    bucketSize: 200
+    bucketSize: 200,
+    rangeDisplayInterval: "raw"
   };
 }
 
@@ -416,10 +441,26 @@ function readStoredPreferences(scope: string): StoredPreferences {
       customDate: typeof scoped.customDate === "string" ? scoped.customDate : "",
       fromTimestamp: typeof scoped.fromTimestamp === "string" ? scoped.fromTimestamp : "",
       toTimestamp: typeof scoped.toTimestamp === "string" ? scoped.toTimestamp : "",
-      bucketSize: asStoredNumber(scoped.bucketSize, 200)
+      bucketSize: asStoredNumber(scoped.bucketSize, 200),
+      rangeDisplayInterval: asRangeDisplayInterval(scoped.rangeDisplayInterval)
     };
   } catch {
     return defaultPreferences();
+  }
+}
+
+function writeStoredPreferences(scope: string, preferences: StoredPreferences) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const stored = raw ? (JSON.parse(raw) as Record<string, Partial<StoredPreferences>>) : {};
+    stored[scope] = { ...(stored[scope] ?? {}), ...preferences };
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
+  } catch {
+    // Keep in-memory state usable if localStorage is unavailable.
   }
 }
 
@@ -493,12 +534,50 @@ function findIndexPointAtOrBefore(points: PCRIndexHistoryResponse["points"], tim
   return matchedPoint;
 }
 
+function sampleRowsByInterval<T extends { timestamp: string }>(rows: T[], interval: RangeDisplayInterval) {
+  if (interval === "raw" || rows.length <= 1) {
+    return rows;
+  }
+
+  const intervalMs = Number(interval) * 60 * 1000;
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return rows;
+  }
+
+  const sampledRows: T[] = [];
+  let nextTargetTime: number | null = null;
+
+  for (const row of rows) {
+    const rowTime = new Date(row.timestamp).getTime();
+    if (!Number.isFinite(rowTime)) {
+      continue;
+    }
+
+    if (sampledRows.length === 0) {
+      sampledRows.push(row);
+      nextTargetTime = rowTime + intervalMs;
+      continue;
+    }
+
+    if (nextTargetTime != null && rowTime >= nextTargetTime) {
+      sampledRows.push(row);
+      nextTargetTime = rowTime + intervalMs;
+    }
+  }
+
+  return sampledRows;
+}
+
 function isStrikeMode(value: unknown): value is StrikeMode {
   return value === "full" || value === "atm" || value === "custom_atm" || value === "custom";
 }
 
 function isTimeMode(value: unknown): value is TimeMode {
   return value === "all" || value === "today" || value === "previous_day" || value === "last_2_days" || value === "custom_date" || value === "custom_range";
+}
+
+function asRangeDisplayInterval(value: unknown): RangeDisplayInterval {
+  return value === "10" || value === "15" || value === "30" || value === "60" ? value : "raw";
 }
 
 function asStoredNumber(value: unknown, fallback: number) {

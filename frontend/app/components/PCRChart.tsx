@@ -301,11 +301,11 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
 
   const chartData = scopedData?.points ?? (strikeMode === "full" && timeMode === "all" ? data : []);
   const pcrChartData = useMemo(
-    () => addSimpleMovingAverage(chartData, Math.max(2, smaPeriod)),
+    () => withTimeMs(addSimpleMovingAverage(chartData, Math.max(2, smaPeriod))),
     [chartData, smaPeriod]
   );
   const indexChartData = useMemo(
-    () => addSimpleMovingAverage(indexData?.points ?? [], Math.max(2, smaPeriod), "spot_ltp", "index_sma"),
+    () => withTimeMs(addSimpleMovingAverage(indexData?.points ?? [], Math.max(2, smaPeriod), "spot_ltp", "index_sma")),
     [indexData, smaPeriod]
   );
   const activeError = scopedError ?? (strikeMode === "full" && timeMode === "all" ? (error ?? null) : null);
@@ -347,8 +347,12 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
     });
   }, [chartData]);
   const rangeAnchorPcrChartData = useMemo(
-    () => addSimpleMovingAverage(rangeAnchorPcrData, Math.max(2, smaPeriod), "range_delta_pcr", "sma_range_delta_pcr"),
+    () => withTimeMs(addSimpleMovingAverage(rangeAnchorPcrData, Math.max(2, smaPeriod), "range_delta_pcr", "sma_range_delta_pcr")),
     [rangeAnchorPcrData, smaPeriod]
+  );
+  const sharedTimeDomain = useMemo(
+    () => computeSharedTimeDomain([indexChartData, pcrChartData, rangeAnchorPcrChartData]),
+    [indexChartData, pcrChartData, rangeAnchorPcrChartData]
   );
   const rangeDeltaPcrAxisMax = useMemo(
     () => computeDeltaPcrAxisMax(rangeAnchorPcrData.map((point) => point.range_delta_pcr)),
@@ -566,7 +570,10 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
                     <LineChart data={indexChartData}>
                       <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
                       <XAxis
-                        dataKey="timestamp"
+                        dataKey="time_ms"
+                        type="number"
+                        scale="time"
+                        domain={sharedTimeDomain ?? ["auto", "auto"]}
                         tickFormatter={(value) => formatChartTime(value)}
                         stroke="#7c879f"
                       />
@@ -593,7 +600,10 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
                 <LineChart data={pcrChartData}>
                   <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
                   <XAxis
-                    dataKey="timestamp"
+                    dataKey="time_ms"
+                    type="number"
+                    scale="time"
+                    domain={sharedTimeDomain ?? ["auto", "auto"]}
                     tickFormatter={(value) => formatChartTime(value)}
                     stroke="#7c879f"
                   />
@@ -623,7 +633,10 @@ export function PCRChart({ data, error, underlying, refreshToken }: PCRChartProp
                   <LineChart data={rangeAnchorPcrChartData}>
                     <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
                     <XAxis
-                      dataKey="timestamp"
+                      dataKey="time_ms"
+                      type="number"
+                      scale="time"
+                      domain={sharedTimeDomain ?? ["auto", "auto"]}
                       tickFormatter={(value) => formatChartTime(value)}
                       stroke="#7c879f"
                     />
@@ -773,6 +786,32 @@ function computeDeltaPcrAxisMax(values: number[]) {
   return Math.min(DELTA_PCR_DISPLAY_CAP, Math.max(0.5, roundToTwo(padded)));
 }
 
+function withTimeMs<T extends { timestamp: string }>(rows: T[]) {
+  return rows.map((row) => ({
+    ...row,
+    time_ms: new Date(row.timestamp).getTime()
+  }));
+}
+
+function computeSharedTimeDomain(rowsGroups: Array<Array<{ time_ms: number }>>) {
+  const times = rowsGroups
+    .flatMap((rows) => rows.map((row) => row.time_ms))
+    .filter((time) => Number.isFinite(time));
+
+  if (!times.length) {
+    return null;
+  }
+
+  const minTime = Math.min(...times);
+  const maxTime = Math.max(...times);
+  if (minTime === maxTime) {
+    const padding = 5 * 60 * 1000;
+    return [minTime - padding, maxTime + padding] as [number, number];
+  }
+
+  return [minTime, maxTime] as [number, number];
+}
+
 function formatFixed(value: unknown, digits: number) {
   const numeric = asFiniteNumber(value);
   if (numeric == null) {
@@ -880,8 +919,8 @@ function writeStoredPreferences(scope: string, preferences: StoredPreferences) {
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    const stored = raw ? (JSON.parse(raw) as Record<string, StoredPreferences>) : {};
-    stored[scope] = preferences;
+    const stored = raw ? (JSON.parse(raw) as Record<string, Partial<StoredPreferences>>) : {};
+    stored[scope] = { ...(stored[scope] ?? {}), ...preferences };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
   } catch {
     // Ignore storage failures and keep the in-memory state usable.
