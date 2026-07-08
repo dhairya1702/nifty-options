@@ -4,7 +4,7 @@ import argparse
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from statistics import mean
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -23,6 +23,8 @@ SLIPPAGE_PCT = 0.01
 SCORE_THRESHOLD = 70.0
 CONFIRMATION_BARS = 2
 STRIKE_STEPS = {"NIFTY": 50, "BANKNIFTY": 100}
+SIGNAL_WIDTH_POINTS = {"NIFTY": 100, "BANKNIFTY": 200}
+MAX_SPOT_AGE = timedelta(minutes=10)
 
 
 @dataclass
@@ -67,7 +69,9 @@ class BacktestResult:
     skipped_missing_atm: int
     skipped_no_entry_window: int
     skipped_position_open: int
+    skipped_unreliable_atm: int
     volume_rows: int
+    index_matched_signals: int
 
 
 def _parse_timestamp(value: str) -> datetime:
@@ -129,28 +133,39 @@ def _spot_by_timestamp(underlying: str, from_timestamp: str | None, to_timestamp
     return {str(point["timestamp"]): _safe_float(point.get("spot_ltp")) for point in points}
 
 
-def _nearest_spot(timestamp: str, ordered_spots: list[tuple[str, float]], cursor: int) -> tuple[float | None, int]:
-    while cursor + 1 < len(ordered_spots) and _parse_timestamp(ordered_spots[cursor + 1][0]) <= _parse_timestamp(timestamp):
+def _nearest_spot(timestamp: str, ordered_spots: list[tuple[str, float]], cursor: int) -> tuple[float | None, int, bool]:
+    timestamp_dt = _parse_timestamp(timestamp)
+    while cursor + 1 < len(ordered_spots) and _parse_timestamp(ordered_spots[cursor + 1][0]) <= timestamp_dt:
         cursor += 1
     if cursor >= 0:
-        return ordered_spots[cursor][1], cursor
-    return None, cursor
+        spot_timestamp, spot_ltp = ordered_spots[cursor]
+        spot_dt = _parse_timestamp(spot_timestamp)
+        if spot_dt.date() == timestamp_dt.date() and timedelta(0) <= timestamp_dt - spot_dt <= MAX_SPOT_AGE:
+            return spot_ltp, cursor, True
+    return None, cursor, False
+
+
+def _strike_has_pair(snapshot: dict[tuple[float, str], dict[str, Any]], strike: float) -> bool:
+    call = snapshot.get((strike, "CE"))
+    put = snapshot.get((strike, "PE"))
+    return bool(call and put and _safe_float(call.get("ltp")) > 0 and _safe_float(put.get("ltp")) > 0)
 
 
 def _fallback_atm_strike(snapshot: dict[tuple[float, str], dict[str, Any]], step: int) -> float | None:
     strikes = sorted({strike for strike, _ in snapshot.keys()})
     if not strikes:
         return None
+    lower_guard = strikes[0] + (len(strikes) * 0.2 * step)
+    upper_guard = strikes[-1] - (len(strikes) * 0.2 * step)
     pairs: list[tuple[float, float]] = []
     for strike in strikes:
         call_ltp = snapshot.get((strike, "CE"), {}).get("ltp")
         put_ltp = snapshot.get((strike, "PE"), {}).get("ltp")
-        if call_ltp is not None and put_ltp is not None:
+        if call_ltp is not None and put_ltp is not None and lower_guard <= strike <= upper_guard:
             pairs.append((abs(_safe_float(call_ltp) - _safe_float(put_ltp)), strike))
     if pairs:
         return min(pairs)[1]
-    middle = strikes[len(strikes) // 2]
-    return _round_to_step(middle, step)
+    return None
 
 
 def _fee_estimate(turnover: float) -> float:
@@ -175,18 +190,25 @@ def _leg_delta(
     return current_value - previous_value
 
 
-def _range_delta_pcr(
+def _signal_strikes(atm_strike: float, width_points: int, step: int) -> list[float]:
+    steps = max(0, int(width_points / step))
+    return [atm_strike + (offset * step) for offset in range(-steps, steps + 1)]
+
+
+def _range_delta_totals(
     snapshot: dict[tuple[float, str], dict[str, Any]],
     previous: dict[tuple[float, str], dict[str, Any]] | None,
-    atm_strike: float,
-    step: int,
-) -> float:
-    strikes = [atm_strike - step, atm_strike, atm_strike + step]
+    strikes: list[float],
+) -> tuple[float, float]:
     call_delta = sum(_leg_delta(snapshot, previous, strike, "CE", "oi") for strike in strikes)
     put_delta = sum(_leg_delta(snapshot, previous, strike, "PE", "oi") for strike in strikes)
+    return call_delta, put_delta
+
+
+def _range_delta_pcr(call_delta: float, put_delta: float) -> float:
     if call_delta <= 0:
         return 0.0
-    return put_delta / call_delta
+    return max(0.0, min(put_delta / call_delta, 3.0))
 
 
 def _score_signal(
@@ -197,6 +219,7 @@ def _score_signal(
     spot: float | None,
     atm_strike: float,
     step: int,
+    signal_width: int,
 ) -> dict[str, Any]:
     ce = snapshot.get((atm_strike, "CE"))
     pe = snapshot.get((atm_strike, "PE"))
@@ -226,14 +249,14 @@ def _score_signal(
             "skip_reason": missing_reason,
         }
 
-    call_oi_delta = _leg_delta(snapshot, previous, atm_strike, "CE", "oi")
-    put_oi_delta = _leg_delta(snapshot, previous, atm_strike, "PE", "oi")
+    strikes = _signal_strikes(atm_strike, signal_width, step)
+    call_oi_delta, put_oi_delta = _range_delta_totals(snapshot, previous, strikes)
     call_ltp_delta = _leg_delta(snapshot, previous, atm_strike, "CE", "ltp")
     put_ltp_delta = _leg_delta(snapshot, previous, atm_strike, "PE", "ltp")
     call_volume_delta = _leg_delta(snapshot, previous, atm_strike, "CE", "volume")
     put_volume_delta = _leg_delta(snapshot, previous, atm_strike, "PE", "volume")
-    delta_pcr = _range_delta_pcr(snapshot, previous, atm_strike, step)
-    spot_delta = (spot or 0.0) - (previous_spot or 0.0)
+    delta_pcr = _range_delta_pcr(call_oi_delta, put_oi_delta)
+    spot_delta = spot - previous_spot if spot is not None and previous_spot is not None else 0.0
 
     ce_components = {"oi": 0.0, "pcr": 0.0, "ltp": 0.0, "index": 0.0, "volume": 0.0}
     pe_components = {"oi": 0.0, "pcr": 0.0, "ltp": 0.0, "index": 0.0, "volume": 0.0}
@@ -355,6 +378,7 @@ def run_backtest(args: argparse.Namespace) -> BacktestResult:
     ordered_spots = sorted(spot_map.items(), key=lambda item: _parse_timestamp(item[0]))
     spot_cursor = -1
     step = STRIKE_STEPS.get(underlying, 50)
+    signal_width = args.signal_width_points or SIGNAL_WIDTH_POINTS.get(underlying, step * 2)
     lot_size = LOT_SIZES.get(underlying, 1)
     quantity = lot_size * args.lots
 
@@ -374,6 +398,8 @@ def run_backtest(args: argparse.Namespace) -> BacktestResult:
     skipped_missing_atm = 0
     skipped_no_entry_window = 0
     skipped_position_open = 0
+    skipped_unreliable_atm = 0
+    index_matched_signals = 0
     volume_rows = sum(1 for row in rows if _safe_float(row.get("volume")) > 0)
 
     for timestamp in timestamps:
@@ -389,15 +415,51 @@ def run_backtest(args: argparse.Namespace) -> BacktestResult:
 
         snapshot = snapshots[timestamp]
         exact_spot = spot_map.get(timestamp)
-        spot, spot_cursor = _nearest_spot(timestamp, ordered_spots, spot_cursor)
-        spot = exact_spot or spot
+        if exact_spot:
+            spot = exact_spot
+            spot_matched = True
+        else:
+            spot, spot_cursor, spot_matched = _nearest_spot(timestamp, ordered_spots, spot_cursor)
         atm_strike = _round_to_step(spot, step) if spot else _fallback_atm_strike(snapshot, step)
         if atm_strike is None:
+            skipped_unreliable_atm += 1
             previous_snapshot = snapshot
             previous_spot = spot
             continue
+        if not _strike_has_pair(snapshot, atm_strike):
+            skipped_missing_atm += 1
+            previous_snapshot = snapshot
+            previous_spot = spot
+            signals.append(
+                {
+                    "timestamp": timestamp,
+                    "action": "wait",
+                    "score": 0.0,
+                    "ce_score": 0.0,
+                    "pe_score": 0.0,
+                    "oi_score": 0.0,
+                    "pcr_score": 0.0,
+                    "ltp_score": 0.0,
+                    "index_score": 0.0,
+                    "volume_score": 0.0,
+                    "atm_strike": atm_strike,
+                    "delta_pcr": 0.0,
+                    "spot": spot,
+                    "spot_delta": 0.0,
+                    "call_oi_delta": 0.0,
+                    "put_oi_delta": 0.0,
+                    "call_ltp_delta": 0.0,
+                    "put_ltp_delta": 0.0,
+                    "call_volume_delta": 0.0,
+                    "put_volume_delta": 0.0,
+                    "skip_reason": "missing_atm_pair",
+                }
+            )
+            continue
+        if spot_matched:
+            index_matched_signals += 1
 
-        signal = _score_signal(timestamp, snapshot, previous_snapshot, previous_spot, spot, atm_strike, step)
+        signal = _score_signal(timestamp, snapshot, previous_snapshot, previous_spot, spot, atm_strike, step, signal_width)
         signals.append(signal)
         if signal.get("skip_reason"):
             skipped_missing_atm += 1
@@ -491,7 +553,9 @@ def run_backtest(args: argparse.Namespace) -> BacktestResult:
         skipped_missing_atm=skipped_missing_atm,
         skipped_no_entry_window=skipped_no_entry_window,
         skipped_position_open=skipped_position_open,
+        skipped_unreliable_atm=skipped_unreliable_atm,
         volume_rows=volume_rows,
+        index_matched_signals=index_matched_signals,
     )
 
 
@@ -507,6 +571,7 @@ def _print_report(args: argparse.Namespace, result: BacktestResult) -> None:
 
     print("Strategy Backtest")
     print(f"Underlying: {args.underlying.upper()}")
+    print(f"Signal strike band: ATM +/- {args.signal_width_points or SIGNAL_WIDTH_POINTS.get(args.underlying.upper(), STRIKE_STEPS.get(args.underlying.upper(), 50) * 2)} points")
     print(f"Raw option rows loaded: {result.raw_rows}")
     print(f"Snapshot timestamps loaded: {result.snapshot_timestamps}")
     print(f"Signal timestamps tested: {len(signals)}")
@@ -517,14 +582,17 @@ def _print_report(args: argparse.Namespace, result: BacktestResult) -> None:
     print("")
 
     volume_pct = (result.volume_rows / result.raw_rows * 100) if result.raw_rows else 0.0
+    index_pct = (result.index_matched_signals / len(signals) * 100) if signals else 0.0
     print("Diagnostics")
     print(f"Entry-window signals: {result.entry_window_signals}")
     print(f"Threshold signals: {result.threshold_signals}")
     print(f"Confirmed entries: {result.confirmed_entries}")
     print(f"Signals skipped for missing ATM data: {result.skipped_missing_atm}")
+    print(f"Timestamps skipped for unreliable ATM: {result.skipped_unreliable_atm}")
     print(f"Threshold signals after entry cutoff: {result.skipped_no_entry_window}")
     print(f"Threshold signals skipped while position open: {result.skipped_position_open}")
     print(f"Rows with volume: {result.volume_rows}/{result.raw_rows} ({volume_pct:.1f}%)")
+    print(f"Signals with matched index spot: {result.index_matched_signals}/{len(signals)} ({index_pct:.1f}%)")
     print("")
 
     daily: dict[str, dict[str, float]] = defaultdict(lambda: {"signals": 0, "trades": 0, "pnl": 0.0})
@@ -595,6 +663,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--show-trades", type=int, default=50)
     parser.add_argument("--show-signals", type=int, default=20)
     parser.add_argument("--show-days", type=int, default=20)
+    parser.add_argument("--signal-width-points", type=int, default=None, help="Signal strike band around ATM. Defaults to 100 for NIFTY and 200 for BANKNIFTY.")
     return parser.parse_args()
 
 
