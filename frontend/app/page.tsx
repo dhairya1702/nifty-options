@@ -7,7 +7,6 @@ import {
   fetchAnalyticsOverview,
   fetchAuthStatus,
   fetchLevels,
-  fetchLiveOptionChain,
   fetchMarketStatus,
   fetchPCRCurrent,
   fetchPCRHistory,
@@ -21,7 +20,6 @@ import {
   type AnalyticsOverview,
   type AuthStatus,
   type LevelsResponse,
-  type LiveOptionChainResponse,
   type MarketStatus,
   type PCRCurrent,
   type PCRHistoryPoint,
@@ -51,7 +49,6 @@ type DashboardErrors = Partial<
 export default function DashboardPage() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
-  const [liveData, setLiveData] = useState<LiveOptionChainResponse | null>(null);
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
   const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
   const [pcrCurrent, setPcrCurrent] = useState<PCRCurrent | null>(null);
@@ -81,11 +78,10 @@ export default function DashboardPage() {
     const nextErrors: DashboardErrors = {};
 
     try {
-      const [authResult, marketResult, liveResult, schedulerResult, overviewResult, pcrResult, historyResult, slabsResult, probabilityResult, levelsResult] =
+      const [authResult, marketResult, schedulerResult, overviewResult, pcrResult, historyResult, slabsResult, probabilityResult, levelsResult] =
         await Promise.allSettled([
           fetchAuthStatus(),
           fetchMarketStatus(),
-          fetchLiveOptionChain(),
           fetchSchedulerStatus(),
           fetchAnalyticsOverview(),
           fetchPCRCurrent(),
@@ -104,13 +100,6 @@ export default function DashboardPage() {
 
       if (marketResult.status === "fulfilled") {
         setMarketStatus(marketResult.value);
-      }
-
-      if (liveResult.status === "fulfilled") {
-        setLiveData(liveResult.value);
-        setRefreshMinutes((current) => (current === 5 ? liveResult.value.refresh_minutes_default : current));
-      } else {
-        nextErrors.live = liveResult.reason instanceof Error ? liveResult.reason.message : "Failed to load live option chain";
       }
 
       if (schedulerResult.status === "fulfilled") {
@@ -279,7 +268,7 @@ export default function DashboardPage() {
     <main className="grid-sheen min-h-screen px-4 py-8 md:px-8">
       <div className="mx-auto flex max-w-[1800px] flex-col gap-6">
         <Header
-          lastUpdatedLabel={liveData?.fetched_at ? formatDateTime(liveData.fetched_at) : "Waiting for live data"}
+          lastUpdatedLabel={formatDateTime(schedulerStatus?.data_status?.latest_snapshot_timestamp ?? pcrCurrent?.timestamp)}
           authMessage={authMessage}
           authActionLabel={authActionLabel}
           authActionUrl={authMessage ? loginUrl : null}
@@ -302,7 +291,7 @@ export default function DashboardPage() {
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">{marketStatus?.phase ?? "loading"} market</p>
               <p className="mt-2 text-sm text-slate-300">
-                Live tables use current Zerodha quotes. Historical PCR/OI panels use your scheduled snapshot history, ideally every 15 minutes.
+                Historical PCR/OI panels use your scheduled snapshot history, ideally every 15 minutes.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -341,12 +330,6 @@ export default function DashboardPage() {
           error={errors.scheduler ?? null}
         />
 
-        {errors.live ? (
-          <Card className="border-rose-500/20 bg-rose-500/10">
-            <CardContent className="p-4 text-sm text-rose-100">{errors.live}</CardContent>
-          </Card>
-        ) : null}
-
         <section className="grid gap-6 xl:grid-cols-3">
           <PCRCard
             pcr={pcrCurrent?.pcr}
@@ -372,7 +355,7 @@ export default function DashboardPage() {
           <OIChangeBarChart
             underlying={schedulerStatus?.underlying ?? selectedUnderlying}
             refreshToken={`${dataRefreshToken}:${globalRefreshTick}`}
-            error={errors.live ?? null}
+            error={null}
           />
           <PCRBreakdownTables
             underlying={schedulerStatus?.underlying ?? selectedUnderlying}

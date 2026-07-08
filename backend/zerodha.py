@@ -21,6 +21,7 @@ NFO_INSTRUMENTS_FAILURE_COOLDOWN = timedelta(minutes=5)
 NSE_INSTRUMENTS_CACHE_TTL = timedelta(hours=6)
 NSE_INSTRUMENTS_FAILURE_COOLDOWN = timedelta(minutes=5)
 LIVE_CONTRACTS_CACHE_TTL = timedelta(minutes=2)
+QUOTE_CHUNK_SIZE = 100
 SUPPORTED_UNDERLYINGS = {
     "NIFTY": {"instrument_name": "NIFTY", "spot_symbol": "NSE:NIFTY 50", "index_tradingsymbol": "NIFTY 50"},
     "BANKNIFTY": {"instrument_name": "BANKNIFTY", "spot_symbol": "NSE:NIFTY BANK", "index_tradingsymbol": "NIFTY BANK"},
@@ -198,6 +199,15 @@ def _require_access_token() -> str:
     return access_token
 
 
+def _quote_in_chunks(kite: KiteConnect, symbols: list[str]) -> dict[str, Any]:
+    quotes: dict[str, Any] = {}
+    for index in range(0, len(symbols), QUOTE_CHUNK_SIZE):
+        chunk = symbols[index : index + QUOTE_CHUNK_SIZE]
+        if chunk:
+            quotes.update(kite.quote(chunk))
+    return quotes
+
+
 def get_option_chain(underlying: str = "NIFTY") -> list[dict[str, float | str]]:
     underlying = _validate_underlying(underlying)
     kite = get_kite_client()
@@ -218,7 +228,7 @@ def get_option_chain(underlying: str = "NIFTY") -> list[dict[str, float | str]]:
             quote_index[symbol] = (strike_price, option_type, instrument)
 
     try:
-        quotes = kite.quote(quote_symbols)
+        quotes = _quote_in_chunks(kite, quote_symbols)
     except TokenException as exc:
         _handle_token_exception(exc)
         raise ZerodhaClientError("Zerodha session expired. Complete login again.") from exc
@@ -656,7 +666,7 @@ def get_live_option_contracts() -> list[dict[str, Any]]:
                 quote_index[symbol] = (strike_price, option_type, instrument)
 
         try:
-            quotes = kite.quote(quote_symbols)
+            quotes = _quote_in_chunks(kite, quote_symbols)
         except TokenException as exc:
             _handle_token_exception(exc)
             raise ZerodhaClientError("Zerodha session expired. Complete login again.") from exc
