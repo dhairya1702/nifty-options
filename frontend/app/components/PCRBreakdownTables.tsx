@@ -139,8 +139,11 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
     const basePutOi = "total_put_oi" in firstPoint ? Number(firstPoint.total_put_oi ?? 0) : 0;
 
     return chartData.map((point, index) => {
+      const previousPoint = index > 0 ? chartData[index - 1] : null;
       const totalCallOi = "total_call_oi" in point ? Number(point.total_call_oi ?? 0) : 0;
       const totalPutOi = "total_put_oi" in point ? Number(point.total_put_oi ?? 0) : 0;
+      const previousCallOi = previousPoint && "total_call_oi" in previousPoint ? Number(previousPoint.total_call_oi ?? 0) : totalCallOi;
+      const previousPutOi = previousPoint && "total_put_oi" in previousPoint ? Number(previousPoint.total_put_oi ?? 0) : totalPutOi;
       const rangeCallChange = roundToTwo(totalCallOi - baseCallOi);
       const rangePutChange = roundToTwo(totalPutOi - basePutOi);
       const adjustedRangeCall = rangeCallChange <= 0 ? 1 : rangeCallChange;
@@ -152,8 +155,11 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
         total_put_oi: totalPutOi,
         range_call_change: rangeCallChange,
         range_put_change: rangePutChange,
+        previous_call_change: roundToTwo(totalCallOi - previousCallOi),
+        previous_put_change: roundToTwo(totalPutOi - previousPutOi),
         adjusted_call_oi: adjustedRangeCall,
         adjusted_put_oi: adjustedRangePut,
+        pcr: totalCallOi ? roundToFour(totalPutOi / totalCallOi) : 0,
         range_delta_pcr: index === 0 ? 0 : clipDeltaPcr(roundToFour(Math.abs(adjustedRangePut / adjustedRangeCall)))
       };
     });
@@ -163,8 +169,10 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
     const rows = subgroupData?.rows ?? [];
     const maxAbsDeltaCall = Math.max(1, ...rows.map((row) => Math.abs(row.delta_call_oi)));
     const maxAbsDeltaPut = Math.max(1, ...rows.map((row) => Math.abs(row.delta_put_oi)));
+    const maxAbsPreviousCall = Math.max(1, ...rows.map((row) => Math.abs(row.delta_call_vs_previous)));
+    const maxAbsPreviousPut = Math.max(1, ...rows.map((row) => Math.abs(row.delta_put_vs_previous)));
     const maxDeltaPcr = Math.max(1, ...rows.map((row) => clipDeltaPcr(row.delta_pcr)));
-    return { maxAbsDeltaCall, maxAbsDeltaPut, maxDeltaPcr };
+    return { maxAbsDeltaCall, maxAbsDeltaPut, maxAbsPreviousCall, maxAbsPreviousPut, maxDeltaPcr };
   }, [subgroupData]);
 
   if (!rangeAnchorPcrData.length && !subgroupData?.rows?.length) {
@@ -179,7 +187,7 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
           <p className="text-xs text-slate-400">Real scoped values used for the cumulative delta PCR calculation.</p>
         </div>
         <div className="overflow-x-auto">
-          <table className="min-w-[1200px] text-sm">
+          <table className="min-w-[1550px] text-sm">
             <thead>
               <tr className="border-b border-white/10 text-left text-slate-400">
                 <th className="px-3 py-3 font-medium">Time</th>
@@ -187,8 +195,11 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
                 <th className="px-3 py-3 font-medium">Put OI In Range</th>
                 <th className="px-3 py-3 font-medium">Delta Call Vs Start</th>
                 <th className="px-3 py-3 font-medium">Delta Put Vs Start</th>
+                <th className="px-3 py-3 font-medium">Delta Call Vs Prev</th>
+                <th className="px-3 py-3 font-medium">Delta Put Vs Prev</th>
                 <th className="px-3 py-3 font-medium">Adjusted Call</th>
                 <th className="px-3 py-3 font-medium">Adjusted Put</th>
+                <th className="px-3 py-3 font-medium">PCR</th>
                 <th className="px-3 py-3 font-medium">Delta PCR</th>
               </tr>
             </thead>
@@ -200,8 +211,11 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
                   <td className="px-3 py-3 text-slate-200">{formatCompact(row.total_put_oi)}</td>
                   <td className={`px-3 py-3 ${row.range_call_change >= 0 ? "text-slate-200" : "text-rose-300"}`}>{formatSignedCompact(row.range_call_change)}</td>
                   <td className={`px-3 py-3 ${row.range_put_change >= 0 ? "text-slate-200" : "text-rose-300"}`}>{formatSignedCompact(row.range_put_change)}</td>
+                  <td className={`px-3 py-3 ${row.previous_call_change >= 0 ? "text-slate-200" : "text-rose-300"}`}>{formatSignedCompact(row.previous_call_change)}</td>
+                  <td className={`px-3 py-3 ${row.previous_put_change >= 0 ? "text-slate-200" : "text-rose-300"}`}>{formatSignedCompact(row.previous_put_change)}</td>
                   <td className="px-3 py-3 text-slate-200">{formatCompact(row.adjusted_call_oi)}</td>
                   <td className="px-3 py-3 text-slate-200">{formatCompact(row.adjusted_put_oi)}</td>
+                  <td className="px-3 py-3 font-medium text-slate-100">{formatFixed(row.pcr, 4)}</td>
                   <td className="px-3 py-3 font-medium text-white">{formatFixed(row.range_delta_pcr, 4)}</td>
                 </tr>
               ))}
@@ -237,7 +251,7 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
         {subgroupBusy ? <p className="mb-3 text-sm text-slate-400">Loading subgroup breakdown...</p> : null}
         {subgroupData && subgroupData.rows.length ? (
           <div className="overflow-x-auto">
-            <table className="min-w-[1400px] text-sm">
+            <table className="min-w-[1650px] text-sm">
               <thead>
                 <tr className="border-b border-white/10 text-left text-slate-400">
                   <th className="px-3 py-3 font-medium">Subgroup</th>
@@ -247,6 +261,8 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
                   <th className="px-3 py-3 font-medium">Current Put OI</th>
                   <th className="px-3 py-3 font-medium">Delta Call</th>
                   <th className="px-3 py-3 font-medium">Delta Put</th>
+                  <th className="px-3 py-3 font-medium">Delta Call Vs Prev</th>
+                  <th className="px-3 py-3 font-medium">Delta Put Vs Prev</th>
                   <th className="px-3 py-3 font-medium">Adjusted Call</th>
                   <th className="px-3 py-3 font-medium">Adjusted Put</th>
                   <th className="px-3 py-3 font-medium">Baseline PCR</th>
@@ -267,6 +283,12 @@ export function PCRBreakdownTables({ underlying, refreshToken }: PCRBreakdownTab
                     </td>
                     <td className={`px-3 py-3 ${row.delta_put_oi >= 0 ? "text-slate-100" : "text-rose-100"}`} style={{ backgroundColor: heatColor(row.delta_put_oi, subgroupHeat.maxAbsDeltaPut, "put") }}>
                       {formatSignedCompact(row.delta_put_oi)}
+                    </td>
+                    <td className={`px-3 py-3 ${row.delta_call_vs_previous >= 0 ? "text-slate-100" : "text-rose-100"}`} style={{ backgroundColor: heatColor(row.delta_call_vs_previous, subgroupHeat.maxAbsPreviousCall, "call") }}>
+                      {formatSignedCompact(row.delta_call_vs_previous)}
+                    </td>
+                    <td className={`px-3 py-3 ${row.delta_put_vs_previous >= 0 ? "text-slate-100" : "text-rose-100"}`} style={{ backgroundColor: heatColor(row.delta_put_vs_previous, subgroupHeat.maxAbsPreviousPut, "put") }}>
+                      {formatSignedCompact(row.delta_put_vs_previous)}
                     </td>
                     <td className="px-3 py-3 text-slate-100" style={{ backgroundColor: heatColor(row.adjusted_call_oi, subgroupHeat.maxAbsDeltaCall, "call") }}>{formatCompact(row.adjusted_call_oi)}</td>
                     <td className="px-3 py-3 text-slate-100" style={{ backgroundColor: heatColor(row.adjusted_put_oi, subgroupHeat.maxAbsDeltaPut, "put") }}>{formatCompact(row.adjusted_put_oi)}</td>

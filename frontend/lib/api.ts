@@ -72,6 +72,8 @@ export type PCRScopedSubgroupRow = {
   current_put_oi: number;
   delta_call_oi: number;
   delta_put_oi: number;
+  delta_call_vs_previous: number;
+  delta_put_vs_previous: number;
   adjusted_call_oi: number;
   adjusted_put_oi: number;
   baseline_pcr: number;
@@ -91,6 +93,7 @@ export type PCRScopedSubgroupResponse = {
   strike_max: number | null;
   bucket_size: number;
   baseline_timestamp: string;
+  previous_timestamp: string;
   latest_timestamp: string;
   rows: PCRScopedSubgroupRow[];
 };

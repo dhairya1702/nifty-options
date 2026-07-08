@@ -181,6 +181,7 @@ def _empty_subgroup_response(
     strike_max: float | None,
     bucket_size: int,
     baseline_timestamp: str | None,
+    previous_timestamp: str | None,
     latest_timestamp: str | None,
 ) -> dict:
     return {
@@ -195,6 +196,7 @@ def _empty_subgroup_response(
         "strike_max": strike_max,
         "bucket_size": bucket_size,
         "baseline_timestamp": baseline_timestamp,
+        "previous_timestamp": previous_timestamp,
         "latest_timestamp": latest_timestamp,
         "rows": [],
     }
@@ -393,14 +395,17 @@ def get_pcr_subgroups_scoped(
             strike_max=effective_max,
             bucket_size=bucket_size,
             baseline_timestamp=None,
+            previous_timestamp=None,
             latest_timestamp=None,
         )
 
     baseline_timestamp = timestamps[0]
+    previous_timestamp = timestamps[-2] if len(timestamps) > 1 else timestamps[-1]
     latest_timestamp = timestamps[-1]
     baseline_rows = _filter_snapshot_rows_to_scope(snapshot_rows(option_scheduler.underlying, baseline_timestamp), effective_min, effective_max)
+    previous_rows = _filter_snapshot_rows_to_scope(snapshot_rows(option_scheduler.underlying, previous_timestamp), effective_min, effective_max)
     current_rows = _filter_snapshot_rows_to_scope(snapshot_rows(option_scheduler.underlying, latest_timestamp), effective_min, effective_max)
-    all_rows = baseline_rows + current_rows
+    all_rows = baseline_rows + previous_rows + current_rows
     if not all_rows:
         return _empty_subgroup_response(
             strike_mode=normalized_strike_mode,
@@ -413,6 +418,7 @@ def get_pcr_subgroups_scoped(
             strike_max=effective_max,
             bucket_size=bucket_size,
             baseline_timestamp=baseline_timestamp,
+            previous_timestamp=previous_timestamp,
             latest_timestamp=latest_timestamp,
         )
 
@@ -435,6 +441,8 @@ def get_pcr_subgroups_scoped(
                 "range": f"{int(range_start)}-{int(range_end)}",
                 "baseline_call_oi": 0.0,
                 "baseline_put_oi": 0.0,
+                "previous_call_oi": 0.0,
+                "previous_put_oi": 0.0,
                 "current_call_oi": 0.0,
                 "current_put_oi": 0.0,
             },
@@ -443,6 +451,29 @@ def get_pcr_subgroups_scoped(
             bucket["baseline_call_oi"] = float(bucket["baseline_call_oi"]) + float(row["oi"] or 0.0)
         else:
             bucket["baseline_put_oi"] = float(bucket["baseline_put_oi"]) + float(row["oi"] or 0.0)
+
+    for row in previous_rows:
+        key = bucket_key(float(row["strike_price"]))
+        range_start = bucket_start + key * bucket_size
+        range_end = min(range_start + bucket_size, (effective_max if effective_max is not None else range_start + bucket_size))
+        bucket = grouped.setdefault(
+            key,
+            {
+                "range_start": range_start,
+                "range_end": range_end,
+                "range": f"{int(range_start)}-{int(range_end)}",
+                "baseline_call_oi": 0.0,
+                "baseline_put_oi": 0.0,
+                "previous_call_oi": 0.0,
+                "previous_put_oi": 0.0,
+                "current_call_oi": 0.0,
+                "current_put_oi": 0.0,
+            },
+        )
+        if row["option_type"] == "CE":
+            bucket["previous_call_oi"] = float(bucket["previous_call_oi"]) + float(row["oi"] or 0.0)
+        else:
+            bucket["previous_put_oi"] = float(bucket["previous_put_oi"]) + float(row["oi"] or 0.0)
 
     for row in current_rows:
         key = bucket_key(float(row["strike_price"]))
@@ -456,6 +487,8 @@ def get_pcr_subgroups_scoped(
                 "range": f"{int(range_start)}-{int(range_end)}",
                 "baseline_call_oi": 0.0,
                 "baseline_put_oi": 0.0,
+                "previous_call_oi": 0.0,
+                "previous_put_oi": 0.0,
                 "current_call_oi": 0.0,
                 "current_put_oi": 0.0,
             },
@@ -470,10 +503,14 @@ def get_pcr_subgroups_scoped(
         bucket = grouped[key]
         baseline_call_oi = float(bucket["baseline_call_oi"])
         baseline_put_oi = float(bucket["baseline_put_oi"])
+        previous_call_oi = float(bucket["previous_call_oi"])
+        previous_put_oi = float(bucket["previous_put_oi"])
         current_call_oi = float(bucket["current_call_oi"])
         current_put_oi = float(bucket["current_put_oi"])
         delta_call_oi = round(current_call_oi - baseline_call_oi, 2)
         delta_put_oi = round(current_put_oi - baseline_put_oi, 2)
+        delta_call_vs_previous = round(current_call_oi - previous_call_oi, 2)
+        delta_put_vs_previous = round(current_put_oi - previous_put_oi, 2)
         adjusted_call = 1.0 if delta_call_oi <= 0 else delta_call_oi
         adjusted_put = 1.0 if delta_put_oi < 0 else delta_put_oi
         subgroup_rows.append(
@@ -485,6 +522,8 @@ def get_pcr_subgroups_scoped(
                 "current_put_oi": current_put_oi,
                 "delta_call_oi": delta_call_oi,
                 "delta_put_oi": delta_put_oi,
+                "delta_call_vs_previous": delta_call_vs_previous,
+                "delta_put_vs_previous": delta_put_vs_previous,
                 "adjusted_call_oi": adjusted_call,
                 "adjusted_put_oi": adjusted_put,
                 "baseline_pcr": round(baseline_put_oi / baseline_call_oi, 4) if baseline_call_oi else 0.0,
@@ -505,6 +544,7 @@ def get_pcr_subgroups_scoped(
         "strike_max": effective_max,
         "bucket_size": bucket_size,
         "baseline_timestamp": baseline_timestamp,
+        "previous_timestamp": previous_timestamp,
         "latest_timestamp": latest_timestamp,
         "rows": subgroup_rows,
     }
